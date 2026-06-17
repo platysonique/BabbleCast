@@ -117,6 +117,7 @@ class AndroidMicCapture:
 
     def stop(self) -> None:
         self._running = False
+        self._on_level = None
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
