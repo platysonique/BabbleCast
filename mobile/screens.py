@@ -9,6 +9,8 @@ from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.card import MDCard
 from kivymd.uix.screen import MDScreen
 
+from babblecast.client.bridge import BridgeManager
+from babblecast.config import get_settings
 from mobile.theme import ACCENT, BG, MUTED, SURFACE, TEXT
 
 class ConnectScreen(MDScreen):
