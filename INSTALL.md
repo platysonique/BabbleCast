@@ -48,6 +48,7 @@ bbc server --name "My Hub"
 | `bbc: command not found` | Use full path or re-run `install.sh`; check `/usr/local/bin` and `~/.local/bin` |
 | mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | Fixed in current tree — see [docs/known-issues.md](docs/known-issues.md) |
 | `PortAudioError: Device unavailable` / ALSA errors / Opus `silk/resampler` abort | See [docs/known-issues.md](docs/known-issues.md) — PortAudio path fixed; standalone silk abort on launch still open |
+| `QMouseEvent` has no attribute `globalPos` (right-click participant) | See [docs/known-issues.md](docs/known-issues.md) — PyQt6 API; use Tap button as workaround |
 
 ---
 

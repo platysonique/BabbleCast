@@ -220,3 +220,48 @@ Relevant code: `babblecast/audio/codec.py` (`OpusCodec`), `babblecast/client/ses
 - Defer starting the voice/encode loop until both mic and speaker streams are confirmed open.
 - Catch native abort paths by validating PCM length in Python before every `opuslib` call.
 
+---
+
+## Linux: `QMouseEvent` has no attribute `globalPos` (participant right-click)
+
+**Status:** Open  
+**Reported:** 2026-06-17 (Pop!_OS 24.04, PyQt6 6.11)  
+**Affects:** Desktop client — right-click participant name for saved Taps menu (`babblecast/client/qt/participant_widget.py`)
+
+### Symptom
+
+Right-clicking a participant name crashes the client.
+
+### Traceback
+
+```
+papaya@pop-os:~$ bbc
+Traceback (most recent call last):
+  File "/home/papaya/Projects/BabbleCast/babblecast/client/qt/participant_widget.py", line 82, in _on_name_click
+    self._show_saved_taps_menu(event.globalPos())
+                               ^^^^^^^^^^^^^^^
+AttributeError: 'QMouseEvent' object has no attribute 'globalPos'
+Aborted (core dumped)
+```
+
+### Cause
+
+PyQt6 removed `QMouseEvent.globalPos()` in favor of `globalPosition()` (returns `QPointF`). Code still calls the Qt5 API.
+
+Relevant code:
+
+```python
+def _on_name_click(self, event) -> None:
+    ...
+    elif event.button() == Qt.MouseButton.RightButton:
+        self._show_saved_taps_menu(event.globalPos())  # ← fails on PyQt6
+```
+
+### Workaround
+
+Avoid right-clicking participant names until fixed. Use the **Tap** button for tap actions instead.
+
+### Proposed fix
+
+Replace `event.globalPos()` with `event.globalPosition().toPoint()` (or pass `QPointF` directly to `QMenu.exec` if supported).
+
