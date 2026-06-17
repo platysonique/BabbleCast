@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "babblecast"
+version = "1.0.0"
+description = "Team live communication hub — server/client voice + text chat for LAN and Tailscale"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "BabbleCast" }]
+keywords = ["voice", "chat", "team", "broadcast", "pyqt6"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Chat",
+    "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+]
+dependencies = [
+    "PyQt6>=6.6",
+    "sounddevice>=0.5",
+    "numpy>=1.24",
+    "zeroconf>=0.131",
+    "websockets>=12.0",
+    "opuslib>=3.0",
+    "noisereduce>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pyinstaller>=6.0"]
+mobile = ["kivy>=2.3", "kivymd>=1.2", "plyer>=2.1"]
+
+[project.scripts]
+bbc = "babblecast.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["babblecast*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,20 @@
+# BabbleCast
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec.bak
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+mobile/bin/
+mobile/.buildozer/
+mobile/.gradle/
+*.apk
+*.aab
+*.ipa
+.DS_Store
+Thumbs.db
