@@ -712,103 +712,6 @@ class BabbleController:
         self._bridge.create_room(self._active_link_id, name.strip())
         self.set_status(f"Creating room “{name.strip()}”…")
 
-    def show_person_details(self, link_id: str, participant: dict) -> None:
-        from kivymd.uix.button import MDFlatButton, MDRaisedButton
-        from kivymd.uix.dialog import MDDialog
-        from kivymd.uix.label import MDLabel
-        from kivymd.uix.slider import MDSlider
-
-        cid = str(participant.get("client_id", ""))
-        name = str(participant.get("name", "?"))
-        link = self._bridge.get_link(link_id)
-        server = link.label if link else link_id
-        my_id = link.client_id if link else ""
-        is_self = cid == my_id
-        pending = link.pending_taps if link else set()
-        has_tap = cid in pending or bool(self._tap_ids.get((link_id, cid)))
-        composite = composite_participant_key(link_id, cid)
-        muted = bool(participant.get("muted", False))
-        speaking = bool(participant.get("speaking", False))
-        voice_level = float(participant.get("voice_level", 0))
-        volume = float(participant.get("volume", 1.0))
-
-        info = MDLabel(
-            text=(
-                f"Server: {server}\n"
-                f"Speaking: {'Yes' if speaking else 'No'}\n"
-                f"Voice level: {voice_level:.0%}\n"
-                f"Tap pending: {'Yes' if has_tap else 'No'}"
-            ),
-            theme_text_color="Custom",
-            text_color=TEXT,
-            size_hint_y=None,
-        )
-        info.bind(texture_size=lambda _l, s: setattr(info, "height", s[1]))
-        body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
-        body.add_widget(info)
-
-        vol_label = MDLabel(
-            text=f"Your volume: {int(volume * 100)}%",
-            theme_text_color="Custom",
-            text_color=TEXT,
-            size_hint_y=None,
-            height=dp(24),
-        )
-        vol_slider = MDSlider(min=0, max=200, value=int(volume * 100), step=1)
-
-        def on_vol_change(_slider, value: float) -> None:
-            vol_label.text = f"Your volume: {int(value)}%"
-            self._bridge.set_participant_volume(composite, value / 100.0)
-
-        vol_slider.bind(value=on_vol_change)
-        body.add_widget(vol_label)
-        body.add_widget(vol_slider)
-
-        mute_state = {"muted": muted}
-
-        def toggle_mute(_btn: MDRaisedButton) -> None:
-            mute_state["muted"] = not mute_state["muted"]
-            self._bridge.set_participant_muted(composite, mute_state["muted"])
-            _btn.text = "Unmute" if mute_state["muted"] else "Mute"
-
-        mute_btn = MDRaisedButton(text="Unmute" if muted else "Mute", on_release=toggle_mute)
-        body.add_widget(mute_btn)
-
-        dialog_holder: list[MDDialog] = []
-
-        def close(_dlg: MDDialog, *_args) -> None:
-            dialog_holder[0].dismiss()
-
-        buttons = [MDFlatButton(text="Close", on_release=close)]
-        if not is_self:
-            buttons.insert(
-                0,
-                MDRaisedButton(
-                    text="Tap",
-                    on_release=lambda *_: (dialog_holder[0].dismiss(), self._send_tap(link_id, cid)),
-                ),
-            )
-            if has_tap:
-                buttons.insert(
-                    0,
-                    MDRaisedButton(
-                        text="Tap chat",
-                        on_release=lambda *_: (
-                            dialog_holder[0].dismiss(),
-                            self._open_tap_chat(link_id, cid, name),
-                        ),
-                    ),
-                )
-
-        dialog = MDDialog(
-            title=f"{name}{' (you)' if is_self else ''}",
-            type="custom",
-            content_cls=body,
-            buttons=buttons,
-        )
-        dialog_holder.append(dialog)
-        dialog.open()
-
     def _on_chat(self, link_id: str, data: dict) -> None:
         self._record_chat(link_id, data)
         if link_id != self._active_link_id:
@@ -846,6 +749,8 @@ class BabbleController:
             self.set_status(f"Tap sent to {target_name}")
 
     def _open_tap_dialog(self, link_id: str, tap_id: str, peer_id: str, peer_name: str) -> None:
+        from kivy.metrics import dp
+        from kivymd.uix.boxlayout import MDBoxLayout
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
         from kivymd.uix.label import MDLabel
         from kivymd.uix.textfield import MDTextField
@@ -857,8 +762,17 @@ class BabbleController:
         self._bridge.open_tap(link_id, tap_id)
         self._bridge.clear_pending_tap(link_id, peer_id)
 
-        tap_input = MDTextField(hint_text="Tap message…")
+        tap_input = MDTextField(hint_text="Tap message…", size_hint_y=None, height=dp(48))
         tap_log = MDLabel(text="", size_hint_y=None)
+        tap_log.bind(texture_size=lambda _l, s: setattr(tap_log, "height", s[1]))
+        content = MDBoxLayout(
+            orientation="vertical",
+            spacing=dp(8),
+            size_hint_y=None,
+            adaptive_height=True,
+        )
+        content.add_widget(tap_log)
+        content.add_widget(tap_input)
 
         def send_msg(*_args) -> None:
             text = tap_input.text.strip()
@@ -889,7 +803,7 @@ class BabbleController:
         self._tap_dialog = MDDialog(
             title=f"Tap — {peer_name}",
             type="custom",
-            content_cls=tap_log,
+            content_cls=content,
             buttons=[
                 MDRaisedButton(text="Save Tap", on_release=save_tap),
                 MDRaisedButton(text="Send", on_release=send_msg),
@@ -898,9 +812,6 @@ class BabbleController:
         )
         self._tap_input = tap_input
         self._tap_log = tap_log
-        box = self._tap_dialog.content_cls.parent
-        if box and tap_input not in box.children:
-            box.add_widget(tap_input)
         self._tap_dialog.open()
         live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)

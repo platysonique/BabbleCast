@@ -45,27 +45,27 @@ Goon Squad parallel audit of `mobile/` + Android audio paths. Fixes applied in c
 | 14 | Android mic `read()` blocks past stop | `stopRecording()` before thread join |
 | 15 | Tap dialog not dismissed on `stop_all` | Dismiss + clear in `stop_all` |
 
-## Open (lower priority — not fixed this pass)
+## Remaining sweep items — FIXED
 
-| # | Issue | Severity |
-|---|--------|----------|
-| 16 | `show_person_details` missing imports (dead code) | Low |
-| 17 | `voice_service.py` hourly sleep loop | Low |
-| 18 | Foreground service name vs buildozer `Voice` | Medium — verify on device |
-| 19 | `BLUETOOTH_CONNECT` manifest gap | Medium |
-| 20 | Credential dialog silent validation failures | Low |
-| 21 | Force-stop skips `on_stop` (platform) | Low — document only |
+| # | Issue | Fix |
+|---|--------|-----|
+| 16 | `show_person_details` dead code with missing imports | Removed; detail panel is the sole path |
+| 17 | `voice_service.py` hourly sleep loop | `threading.Event().wait()` — blocks until service stop |
+| 18 | Foreground service name vs buildozer `Voice` | Start/stop via `ServiceVoice` Java class + correct intent |
+| 19 | `BLUETOOTH_CONNECT` manifest gap | Already in `buildozer.spec`; runtime request gated to API 31+ |
+| 20 | Credential dialog silent validation failures | Inline error labels on connect/host dialogs |
+| 21 | Force-stop / swipe-away skips cleanup | `on_pause` + `isFinishing()` → `stop_all`; service is non-sticky (`onTaskRemoved` stops self) |
 
 ---
 
 ## Verification checklist (Android)
 
-- [ ] Host → auto-connect, no second name dialog
-- [ ] Discover tap → password prompt when `auth=1`
-- [ ] Manual IP to password server → password field shown
-- [ ] Red ✕ disconnect → confirm + don’t ask again
-- [ ] Listen/mic icons flip after tap
-- [ ] Active server card highlighted
-- [ ] Tap chat opens dialog from peer drawer
-- [ ] Back out of app — no crash in logcat
+- [x] Host → auto-connect, no second name dialog
+- [x] Discover tap → password prompt when `auth=1`
+- [x] Manual IP to password server → password field shown
+- [x] Red ✕ disconnect → confirm + don’t ask again
+- [x] Listen/mic icons flip after tap
+- [x] Active server card highlighted
+- [x] Tap chat opens dialog from peer drawer
+- [x] Back out of app — no crash in logcat
 - [ ] PC on LAN appears in Discover (same Wi‑Fi, Location granted)

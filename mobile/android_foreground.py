@@ -34,13 +34,10 @@ def start_voice_foreground() -> None:
         _wake_lock.setReferenceCounted(False)
         _wake_lock.acquire()
 
-        Intent = autoclass("android.content.Intent")
-        PythonService = autoclass("org.kivy.android.PythonService")
-        intent = Intent(activity, PythonService)
-        intent.putExtra("pythonService", "voice")
-        intent.putExtra("pythonName", "BabbleCast")
-        intent.putExtra("pythonTitle", "BabbleCast")
-        intent.putExtra("pythonMessage", "Voice active on set")
+        ServiceVoice = autoclass("org.babblecast.babblecast.ServiceVoice")
+        intent = ServiceVoice.getDefaultIntent(
+            activity, "", "BabbleCast", "Voice active on set", ""
+        )
         if hasattr(activity, "startForegroundService"):
             activity.startForegroundService(intent)
         else:
@@ -66,6 +63,13 @@ def stop_voice_foreground() -> None:
     try:
         from jnius import autoclass
 
+        try:
+            from mobile.voice_service import request_stop
+
+            request_stop()
+        except Exception:
+            pass
+
         if _wake_lock is not None:
             try:
                 if _wake_lock.isHeld():
@@ -76,10 +80,8 @@ def stop_voice_foreground() -> None:
 
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
         activity = PythonActivity.mActivity
-        Intent = autoclass("android.content.Intent")
-        PythonService = autoclass("org.kivy.android.PythonService")
-        intent = Intent(activity, PythonService)
-        activity.stopService(intent)
+        ServiceVoice = autoclass("org.babblecast.babblecast.ServiceVoice")
+        ServiceVoice.stop(activity)
         _service_started = False
         logger.info("Android voice foreground service stopped")
     except Exception:

@@ -65,4 +65,15 @@ class BabbleCastMobileApp(MDApp):
         self.controller.stop_all()
 
     def on_pause(self) -> bool:
+        try:
+            from kivy.utils import platform
+
+            if platform == "android":
+                from jnius import autoclass
+
+                activity = autoclass("org.kivy.android.PythonActivity").mActivity
+                if activity is not None and activity.isFinishing():
+                    self.controller.stop_all()
+        except Exception:
+            pass
         return True

@@ -227,6 +227,11 @@ class AndroidSpeakerOutput:
 
     def stop(self) -> None:
         self._running = False
+        if self._track:
+            try:
+                self._track.pause()
+            except Exception:
+                pass
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None

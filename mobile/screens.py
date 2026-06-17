@@ -286,6 +286,7 @@ class LiveScreen(MDScreen):
         chat_row = MDBoxLayout(spacing=dp(4), size_hint_y=None, height=dp(44))
         self._mute_btn = MDIconButton(icon="microphone", on_release=lambda *_: self._toggle_mute())
         self._ptt_btn = MDIconButton(icon="record-circle-outline", on_release=lambda *_: self._toggle_ptt())
+        self.bind(ptt_active=self._sync_ptt_icon)
         self._chat_input = MDTextField(
             hint_text="Type a message, then hit ↵",
             on_text_validate=lambda *_: self._send_chat(),
@@ -337,10 +338,15 @@ class LiveScreen(MDScreen):
         app.controller.toggle_mute()
         self._mute_btn.icon = "microphone-off" if self.is_muted else "microphone"
 
+    def _sync_ptt_icon(self, _instance, value: bool) -> None:
+        if hasattr(self, "_ptt_btn"):
+            self._ptt_btn.icon = "record-circle" if value else "record-circle-outline"
+
     def _toggle_ptt(self) -> None:
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         app.controller.toggle_ptt()
+        self._sync_ptt_icon(self, self.ptt_active)
 
     def _send_chat(self) -> None:
         app = MDApp.get_running_app()

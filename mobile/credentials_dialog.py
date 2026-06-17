@@ -16,9 +16,31 @@ from kivymd.uix.textfield import MDTextField
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import MAX_NAME_LEN
 
+_ERROR_COLOR = (0.97, 0.46, 0.56, 1)
+
 
 def _clean_name(text: str) -> str:
     return text.strip()[:MAX_NAME_LEN] or "Anonymous"
+
+
+def _error_label() -> MDLabel:
+    return MDLabel(
+        text="",
+        theme_text_color="Custom",
+        text_color=_ERROR_COLOR,
+        font_style="Caption",
+        size_hint_y=None,
+        height=0,
+    )
+
+
+def _set_error(label: MDLabel, message: str) -> None:
+    if message:
+        label.text = message
+        label.height = dp(20)
+    else:
+        label.text = ""
+        label.height = 0
 
 
 def prompt_connect(
@@ -44,6 +66,7 @@ def prompt_connect(
         size_hint_y=None,
         height=dp(48),
     )
+    error_label = _error_label()
     body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
     body.add_widget(
         MDTextField(text=f"{server_label}", readonly=True, size_hint_y=None, height=dp(44))
@@ -51,6 +74,7 @@ def prompt_connect(
     body.add_widget(name_field)
     if password_required:
         body.add_widget(password_field)
+    body.add_widget(error_label)
     holder: list[MDDialog] = []
 
     def dismiss() -> None:
@@ -59,8 +83,10 @@ def prompt_connect(
     def accept(*_args) -> None:
         name = _clean_name(name_field.text)
         pwd = password_field.text if password_required else ""
-        if password_required and not pwd:
+        if password_required and not pwd.strip():
+            _set_error(error_label, "Enter the server password.")
             return
+        _set_error(error_label, "")
         settings.display_name = name
         save_settings(settings)
         dismiss()
@@ -114,11 +140,13 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
 
     protect_cb.bind(active=on_protect)
 
+    error_label = _error_label()
     body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
     body.add_widget(server_field)
     body.add_widget(name_field)
     body.add_widget(protect_row)
     body.add_widget(password_field)
+    body.add_widget(error_label)
     holder: list[MDDialog] = []
 
     def dismiss() -> None:
@@ -127,11 +155,14 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
     def accept(*_args) -> None:
         server = server_field.text.strip()[:MAX_NAME_LEN]
         if not server:
+            _set_error(error_label, "Enter a server name.")
             return
         name = _clean_name(name_field.text)
         pwd = password_field.text if protect_cb.active else ""
-        if protect_cb.active and not pwd:
+        if protect_cb.active and not pwd.strip():
+            _set_error(error_label, "Enter a password or turn off protection.")
             return
+        _set_error(error_label, "")
         settings.hosted_server_name = server
         settings.display_name = name
         save_settings(settings)
@@ -178,7 +209,7 @@ def prompt_disconnect(server_label: str, on_confirm: Callable[[bool], None]) -> 
             MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
             MDRaisedButton(
                 text="Disconnect",
-                md_bg_color=(0.97, 0.46, 0.56, 1),
+                md_bg_color=_ERROR_COLOR,
                 on_release=confirm,
             ),
         ],
