@@ -13,7 +13,8 @@ from typing import Callable
 from zeroconf import IPVersion, InterfaceChoice, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, LOCAL_DOMAIN, SERVICE_TYPE
-from babblecast.network import local_ipv4_addresses
+from babblecast.network import local_ipv4_addresses, pick_reachable_server_ip
+from babblecast.network_scan import merge_scan_with_client_subnets, scan_local_subnets_for_servers
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,14 @@ class DiscoveredServer:
     udp_port: int
     properties: dict[str, str]
     seen_at: float
+    addresses: tuple[str, ...] = ()
+    discovered_via: str = "mdns"
 
     @property
     def label(self) -> str:
         host_label = self.hostname or f"{self.host}:{self.ws_port}"
-        return f"{self.name} ({host_label})"
+        via = " · scan" if self.discovered_via == "scan" else ""
+        return f"{self.name} ({host_label}){via}"
 
     @property
     def hostname(self) -> str:
@@ -55,8 +59,12 @@ class DiscoveredServer:
 
     @property
     def connect_host(self) -> str:
-        """Hostname or IP to use when opening a WebSocket (prefer mDNS name)."""
-        return self.hostname or self.host
+        """Hostname or subnet-aware IP for WebSocket connect."""
+        if self.hostname:
+            return self.hostname
+        if self.addresses:
+            return pick_reachable_server_ip(list(self.addresses))
+        return self.host
 
 
 class ServerAdvertiser:
@@ -178,8 +186,10 @@ class ServerDiscovery:
         self._browser: ServiceBrowser | None = None
         self._thread: threading.Thread | None = None
         self._prune_thread: threading.Thread | None = None
+        self._scan_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._running = False
+        self._scan_done = False
 
     @property
     def servers(self) -> list[DiscoveredServer]:
@@ -191,15 +201,10 @@ class ServerDiscovery:
             self._on_update(self.servers)
 
     def _resolve(self, service_name: str, info: ServiceInfo) -> None:
-        host = ""
-        for addr in info.addresses or []:
-            candidate = socket.inet_ntoa(addr)
-            if candidate.startswith("127."):
-                continue
-            host = candidate
-            break
-        if not host and info.addresses:
-            host = socket.inet_ntoa(info.addresses[0])
+        raw_addresses = [socket.inet_ntoa(addr) for addr in (info.addresses or [])]
+        non_loopback = [ip for ip in raw_addresses if not ip.startswith("127.")]
+        address_pool = non_loopback or raw_addresses
+        host = pick_reachable_server_ip(address_pool) if address_pool else ""
         if not host:
             return
         props = {
@@ -216,6 +221,8 @@ class ServerDiscovery:
             udp_port=udp_port,
             properties=props,
             seen_at=time.time(),
+            addresses=tuple(address_pool),
+            discovered_via="mdns",
         )
         with self._lock:
             self._servers[service_name] = entry
@@ -254,6 +261,48 @@ class ServerDiscovery:
             if changed:
                 self._emit()
 
+    def _scan_loop(self) -> None:
+        """When mDNS browse is empty, probe local /24 subnets for open WS ports."""
+        while not self._stop_event.is_set():
+            self._stop_event.wait(15)
+            if self._stop_event.is_set() or self._scan_done:
+                break
+            with self._lock:
+                if self._servers:
+                    self._scan_done = True
+                    break
+            try:
+                hits = merge_scan_with_client_subnets(scan_local_subnets_for_servers())
+            except Exception:
+                logger.exception("Subnet scan failed")
+                hits = []
+            if not hits:
+                continue
+            now = time.time()
+            changed = False
+            with self._lock:
+                for ip in hits:
+                    key = f"scan:{ip}"
+                    if key in self._servers:
+                        continue
+                    self._servers[key] = DiscoveredServer(
+                        service_name=key,
+                        name=f"BabbleCast @ {ip}",
+                        host=ip,
+                        ws_port=DEFAULT_WS_PORT,
+                        udp_port=DEFAULT_UDP_PORT,
+                        properties={"name": f"BabbleCast @ {ip}", "host": "", "auth": "0"},
+                        seen_at=now,
+                        addresses=(ip,),
+                        discovered_via="scan",
+                    )
+                    changed = True
+                self._scan_done = True
+            if changed:
+                logger.info("Subnet scan added %s server(s)", len(hits))
+                self._emit()
+            break
+
     def _browse_loop(self) -> None:
         zc: Zeroconf | None = None
         browser: ServiceBrowser | None = None
@@ -291,6 +340,12 @@ class ServerDiscovery:
             name="bbc-discovery-prune",
         )
         self._prune_thread.start()
+        self._scan_thread = threading.Thread(
+            target=self._scan_loop,
+            daemon=True,
+            name="bbc-subnet-scan",
+        )
+        self._scan_thread.start()
 
     def stop(self) -> None:
         if not self._running:
@@ -304,3 +359,7 @@ class ServerDiscovery:
         if self._prune_thread:
             self._prune_thread.join(timeout=5)
             self._prune_thread = None
+        if self._scan_thread:
+            self._scan_thread.join(timeout=60)
+            self._scan_thread = None
+        self._scan_done = False

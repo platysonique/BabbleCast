@@ -432,10 +432,14 @@ class MainWindow(QMainWindow):
         self._embedded.start()
 
     def _on_embedded_started(self, host: str, port: int) -> None:
+        from babblecast.discovery import service_hostname, slugify_server_name
+
         self._embedded_host = host
         self._embedded_port = port
         self._host_server_btn.setText("Stop Server")
-        self._status.setText(f"Hosting on {host}:{port} — connecting…")
+        lan = self._embedded.lan_host if self._embedded else host
+        slug_host = service_hostname(slugify_server_name(self._settings.hosted_server_name or "BabbleCast"))
+        self._status.setText(f"Hosting on {lan}:{port} — others: {slug_host}")
         if self._pending_embedded_connect and self._embedded and self._embedded.running:
             self._pending_embedded_connect = False
             if not self._already_connected(host, port):
@@ -446,7 +450,7 @@ class MainWindow(QMainWindow):
                     skip_name_prompt=True,
                 )
             else:
-                self._status.setText(f"Hosting on {host}:{port} — already connected")
+                self._status.setText(f"Hosting on {lan}:{port} — already connected")
 
     def _on_embedded_failed(self, reason: str) -> None:
         self._pending_embedded_connect = False

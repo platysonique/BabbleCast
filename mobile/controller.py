@@ -166,7 +166,9 @@ class BabbleController:
         if servers:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
-            screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
+            screen.set_discovery_status(
+                "No servers yet — scanning your subnet, or enter IP / name.babblecast.local"
+            )
 
     def _password_required_for(self, host: str, port: int) -> bool:
         host = host.strip().lower()
@@ -424,8 +426,12 @@ class BabbleController:
         self._embedded.start()
 
     def _on_embedded_started(self, host: str, port: int) -> None:
+        from babblecast.discovery import service_hostname, slugify_server_name
+
         self.refresh_host_ui()
-        self.set_status(f"Hosting on {host}:{port} — connecting…")
+        lan = self._embedded.lan_host if self._embedded else host
+        slug_host = service_hostname(slugify_server_name(self._settings.hosted_server_name or "BabbleCast"))
+        self.set_status(f"Hosting on {lan}:{port} — others: {slug_host} or Discover")
         if self._pending_embedded_connect and self._embedded and self._embedded.running:
             self._pending_embedded_connect = False
             screen = self.app.screen("connect")
@@ -441,7 +447,7 @@ class BabbleController:
                     skip_name_prompt=True,
                 )
             else:
-                self.set_status(f"Hosting on {host}:{port} — already connected")
+                self.set_status(f"Hosting on {lan}:{port} — already connected")
 
     def _on_embedded_failed(self, reason: str) -> None:
         self._pending_embedded_connect = False

@@ -58,7 +58,7 @@ class ConnectScreen(MDScreen):
         server_scroll.add_widget(self._server_box)
 
         manual_label = MDLabel(
-            text="Or connect manually (PC LAN IP, not 127.0.0.1)",
+            text="Or enter server IP / name.babblecast.local (never 127.0.0.1 from another device)",
             font_style="H6",
             theme_text_color="Custom",
             text_color=TEXT,

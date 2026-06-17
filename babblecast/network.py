@@ -80,6 +80,51 @@ def _linux_interface_ipv4(seen: set[str]) -> list[str]:
     return found
 
 
+def ipv4_prefix24(ip: str) -> tuple[int, int, int] | None:
+    """First three octets for typical home /24 LAN matching."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def same_subnet_24(a: str, b: str) -> bool:
+    """True when two IPv4 addresses share a /24 prefix (typical home LAN)."""
+    pa, pb = ipv4_prefix24(a), ipv4_prefix24(b)
+    return pa is not None and pa == pb
+
+
+def pick_reachable_server_ip(
+    server_ips: list[str],
+    *,
+    client_ips: list[str] | None = None,
+) -> str:
+    """Pick the server IP most likely reachable from this machine.
+
+    When a host advertises multiple interfaces (wired + Wi‑Fi), clients on
+    another machine must use an address on the *same subnet* — not 127.0.0.1
+    and not the server's unrelated VLAN address.
+    """
+    client_ips = client_ips or local_ipv4_addresses()
+    candidates = [ip for ip in server_ips if ip and not ip.startswith("127.")]
+    if not candidates:
+        return server_ips[0] if server_ips else ""
+    for server_ip in candidates:
+        for client_ip in client_ips:
+            if same_subnet_24(server_ip, client_ip):
+                return server_ip
+    return candidates[0]
+
+
+def primary_lan_ipv4() -> str:
+    """Best guess at this machine's main LAN address for display and connect hints."""
+    ips = local_ipv4_addresses()
+    return ips[0] if ips else "127.0.0.1"
+
+
 def is_local_host(host: str) -> bool:
     """True when host refers to this machine (loopback or a local interface IP)."""
     normalized = host.strip().lower()

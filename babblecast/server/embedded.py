@@ -8,6 +8,7 @@ import threading
 from typing import Callable
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT
+from babblecast.network import primary_lan_ipv4
 from babblecast.server.hub import BabbleCastHub
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,13 @@ class EmbeddedServer:
 
     @property
     def host(self) -> str:
+        """Loopback — used only for auto-connect on the same machine."""
         return "127.0.0.1"
+
+    @property
+    def lan_host(self) -> str:
+        """Real LAN address other devices should use (wired or Wi‑Fi)."""
+        return primary_lan_ipv4()
 
     @property
     def ws_port(self) -> int:
