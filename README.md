@@ -2,6 +2,29 @@
 
 Team live communication hub — voice + text chat for LAN and Tailscale networks.
 
+## Quick start (Linux)
+
+```bash
+git clone git@github.com:platysonique/BabbleCast.git
+cd BabbleCast
+bash packaging/linux/install.sh
+bbc
+```
+
+**Manual install** (other machine, no install script):
+
+```bash
+sudo apt-get install -y python3-venv python3-pip libportaudio2 libopus0 \
+  libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0
+python3 -m venv .venv && source .venv/bin/activate
+pip install -U pip wheel
+pip install -r requirements.txt
+pip install -e .
+bbc
+```
+
+Full platform details: **[INSTALL.md](INSTALL.md)**
+
 ## Features
 
 - **Server/client combo** — host from the app or run headless `bbc server`
@@ -12,24 +35,16 @@ Team live communication hub — voice + text chat for LAN and Tailscale networks
 - **Mute / Unmute / PTT** with adjustable noise gate and noise suppression
 - **Multiple rooms** with presence list and per-user volume/mute
 - **Text chat** with voice activity meters
-- **Cross-platform**: Linux, Windows, Android, iOS
 
-## Quick start (Linux)
+## Dependencies
 
-```bash
-git clone git@github.com:platysonique/BabbleCast.git
-cd BabbleCast
-bash packaging/linux/install.sh
-bbc
-```
+| File | Purpose |
+|------|---------|
+| `requirements.txt` | Runtime Python packages |
+| `requirements-dev.txt` | + pytest, PyInstaller |
+| `requirements-lock.txt` | Pinned versions for reproducible installs |
 
-Or without install:
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-bbc
-```
+System libraries (PortAudio, Opus, PyQt6 GL/X11) are **not** in pip — see `INSTALL.md`.
 
 ### Headless server
 
@@ -39,33 +54,11 @@ bbc server --name "Studio-A"
 
 ## Windows
 
-```bat
-packaging\windows\build.bat
-```
+See **[INSTALL.md](INSTALL.md)** — `pip install -r requirements.txt`, then `pip install -e .`, or run `packaging\windows\build.bat`.
 
-Run `dist\BabbleCast.exe` or build installer with Inno Setup (`packaging\windows\installer.iss`).
+## Android / iOS
 
-## Android
-
-```bash
-cd mobile
-pip install buildozer cython
-buildozer android debug
-```
-
-APK output: `mobile/bin/`.
-
-## iOS
-
-See `mobile/build_ios.sh` — requires macOS + kivy-ios toolchain.
-
-## Audio model
-
-BabbleCast opens normal **shared** PortAudio input/output streams (same model as Discord/Zoom). It never requests exclusive device access on Windows WASAPI, PulseAudio, or PipeWire.
-
-## Tailscale
-
-Start the server on any machine in your tailnet. Clients discover via mDNS when on the same LAN; for remote peers, connect manually to the Tailscale IP (shown in server list when discoverable on that network segment).
+See `INSTALL.md` and `mobile/`.
 
 ## License
 

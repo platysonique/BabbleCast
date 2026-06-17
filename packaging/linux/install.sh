@@ -3,21 +3,27 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VENV="${ROOT}/.venv"
+SUDO="${SUDO:-sudo-keyring}"
 
 APT_PACKAGES=(
 	python3-venv
 	python3-pip
 	libportaudio2
 	libopus0
+	libxkbcommon-x11-0
+	libgl1
+	libegl1
+	libxcb-cursor0
+	libxcb-xinerama0
 )
 
 install_system_deps() {
 	if ! command -v apt-get &>/dev/null; then
-		echo "install.sh: apt-get not found; install PortAudio manually (libportaudio2)." >&2
+		echo "install.sh: apt-get not found; see INSTALL.md for manual system packages." >&2
 		return 1
 	fi
-	sudo apt-get update
-	sudo apt-get install -y "${APT_PACKAGES[@]}"
+	"$SUDO" apt-get update
+	"$SUDO" apt-get install -y "${APT_PACKAGES[@]}"
 }
 
 echo "== BabbleCast system dependencies =="
@@ -27,9 +33,11 @@ if ! install_system_deps; then
 	exit 1
 fi
 
+echo "== Python virtualenv + dependencies =="
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install -U pip wheel
-"$VENV/bin/pip" install -e "$ROOT[dev]"
+"$VENV/bin/pip" install -r "${ROOT}/requirements-dev.txt"
+"$VENV/bin/pip" install -e "$ROOT"
 
 WRAPPER="$(mktemp)"
 cat > "${WRAPPER}" <<EOF
@@ -39,7 +47,7 @@ EOF
 chmod +x "${WRAPPER}"
 
 BBC_PATH=""
-if sudo install -m 755 "${WRAPPER}" /usr/local/bin/bbc 2>/dev/null; then
+if "$SUDO" install -m 755 "${WRAPPER}" /usr/local/bin/bbc 2>/dev/null; then
 	BBC_PATH="/usr/local/bin/bbc"
 else
 	INSTALL_DIR="${HOME}/.local/bin"
@@ -84,3 +92,4 @@ EOF
 
 echo "BabbleCast installed: ${BBC_PATH}"
 echo "Run: bbc"
+echo "See INSTALL.md if anything fails."

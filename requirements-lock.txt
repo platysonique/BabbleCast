@@ -1,0 +1,15 @@
+# Pinned versions — verified on Linux (Python 3.12, June 2026)
+# Reproducible install: pip install -r requirements-lock.txt && pip install -e . --no-deps
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6_sip==13.11.1
+sounddevice==0.5.5
+numpy==2.4.6
+scipy==1.17.1
+zeroconf==0.149.16
+websockets==16.0
+opuslib==3.0.1
+noisereduce==3.0.3
+pytest==9.1.0
+pytest-asyncio==1.4.0
+pyinstaller==6.19.0

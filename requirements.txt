@@ -1,0 +1,17 @@
+# BabbleCast runtime dependencies (Python 3.10+)
+# Install: pip install -r requirements.txt && pip install -e .
+#
+# Linux system libraries (Ubuntu/Debian) — run BEFORE pip:
+#   sudo apt-get install -y python3-venv python3-pip libportaudio2 libopus0 \
+#     libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0
+#
+# Or use: bash packaging/linux/install.sh
+
+PyQt6>=6.6
+sounddevice>=0.5
+numpy>=1.24
+scipy>=1.10
+zeroconf>=0.131
+websockets>=12.0
+opuslib>=3.0
+noisereduce>=3.0
