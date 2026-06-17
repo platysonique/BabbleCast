@@ -46,6 +46,7 @@ bbc server --name "My Hub"
 | `opuslib` / Opus errors | `sudo apt-get install libopus0` |
 | PyQt6 fails to start / GL errors | Install `libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0` |
 | `bbc: command not found` | Use full path or re-run `install.sh`; check `/usr/local/bin` and `~/.local/bin` |
+| mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | See [docs/known-issues.md](docs/known-issues.md) |
 
 ---
 
