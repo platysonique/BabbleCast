@@ -265,3 +265,106 @@ Avoid right-clicking participant names until fixed. Use the **Tap** button for t
 
 Replace `event.globalPos()` with `event.globalPosition().toPoint()` (or pass `QPointF` directly to `QMenu.exec` if supported).
 
+---
+
+## Linux: mic switch fails on ALSA hardware device (`PaErrorCode -9985`)
+
+**Status:** Open (investigated 2026-06-17)  
+**Reported:** 2026-06-17 (Pop!_OS 24.04, Python 3.12, PortAudio ALSA host API)  
+**Affects:** Desktop client — changing **Input mic** in the audio drawer while connected or monitoring (`MicCapture.set_device` via `BridgeManager.set_input_device` / `ClientSession.set_input_device`)
+
+### Symptom
+
+User selects a different microphone in the UI (audio drawer → Input mic combo). Console prints low-level ALSA errors and a PortAudio warning; the requested mic may not actually be used.
+
+### Log (user report)
+
+```
+Expression 'ret' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1736
+Expression 'AlsaOpen( &alsaApi->baseHostApiRep, params, streamDir, &self->pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1904
+Expression 'PaAlsaStreamComponent_Initialize( &self->capture, alsaApi, inParams, StreamDirection_In, NULL != callback )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2171
+Expression 'PaAlsaStream_Initialize( stream, alsaHostApi, inputParameters, outputParameters, sampleRate, framesPerBuffer, callback, streamFlags, userData )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2839
+Mic open failed on device 12: Error opening InputStream: Device unavailable [PaErrorCode -9985]
+```
+
+### Investigation summary
+
+Reproduced locally on the same machine (`papaya@pop-os`) with BabbleCast `f23a2c4`.
+
+#### Device involved
+
+On this system, **PortAudio device index 12** is:
+
+| Index | Name | Type |
+|------:|------|------|
+| 12 | `USB CAMERA: Audio (hw:2,0)` | Raw ALSA hardware capture node (USB webcam mic) |
+| 34 | `default` | System default input (PipeWire/Pulse route) |
+
+The UI lists both in the Input mic dropdown (`detail_drawer.py` → `populate_devices` → all entries from `list_input_devices()`).
+
+#### Call path when user changes mic
+
+1. User picks device in **Input mic** `QComboBox` (`detail_drawer.py::_input_changed`)
+2. → `BridgeManager.set_input_device(device_key)` (or `ClientSession.set_input_device` per link)
+3. → saves `input_device` to settings, calls `MicCapture.set_device(device_key)`
+4. → `stop()` closes current `InputStream`, then `start()` reopens via `iter_input_device_indices(preferred_key)`
+
+Relevant code: `babblecast/audio/engine.py` (`MicCapture.set_device`, `MicCapture.start`), `babblecast/audio/portaudio.py` (`iter_input_device_indices`).
+
+#### Reproduction
+
+```text
+Start mic on default (device 34) → switch to USB CAMERA (device 12)
+```
+
+Result: **identical ALSA errors** and `Mic open failed on device 12: ... [PaErrorCode -9985]`.
+
+Cold-open of device 12 **succeeds** when no other BabbleCast input stream is active. Failure occurs specifically during **hot-swap** from an already-open stream (typically on `default` / PipeWire route).
+
+After device 12 fails, `MicCapture.start()` **silently falls back** to the next candidate in `iter_input_device_indices` (usually device 34 `default` again). The user may believe they switched to the USB camera while still on the default route.
+
+#### Root causes (multiple, compounding)
+
+1. **Raw ALSA hw node vs PipeWire session routing**  
+   Selecting `USB CAMERA: Audio (hw:2,0)` asks PortAudio to open the **direct hardware PCM** (`hw:2,0`). While PipeWire/Pulse already owns or routes that device through the session graph, ALSA returns *device unavailable* (`-9985`). This is distinct from opening `default`, `pipewire`, or `pulse` virtual devices (indices 27–28, 34 on this machine).
+
+2. **Hot-swap stops then reopens with no settle time**  
+   `set_device()` calls `stop()` then immediately `start()` on the new index. ALSA/PipeWire may not release the previous handle instantly; the preferred hw device is tried first and fails before fallback.
+
+3. **Fallback masks user intent**  
+   `iter_input_device_indices` tries preferred → defaults → all inputs. When the user's pick fails, a warning is logged but **no UI error** is shown; capture may resume on a different device without notice.
+
+4. **`_enabled` flag not restored after `stop()`** (secondary defect)  
+   `MicCapture.stop()` sets `_enabled = False`; `start()` never sets it back to `True`. After a device switch, the PortAudio callback returns immediately even if a fallback stream opens — **local meters and transmit can stop working** until app restart.
+
+5. **No error handling on device change**  
+   `BridgeManager.set_input_device` / `ClientSession.set_input_device` do not catch `PortAudioError`. If every candidate fails, the exception propagates into the Qt signal handler (potential crash). If fallback succeeds, the user sees only stderr noise.
+
+6. **Host-API preference ineffective on this OS**  
+   PortAudio reports all devices as host API **ALSA** (including `pipewire` / `pulse` plugin devices). `_host_rank()` in `portaudio.py` cannot prefer PipeWire over raw hw nodes for fallback ordering beyond index sort order.
+
+7. **Device list includes entries unsuitable for hot-swap**  
+   Dropdown exposes raw `hw:X,Y` nodes, ALSA plugins (`lavrate`, `speexrate`, …), and virtual routes side-by-side with no guidance. Users can pick hardware nodes that work in isolation but fail under an active PipeWire session.
+
+#### What this is NOT
+
+- Not a missing `libportaudio2` install (capture works on `default` at startup).
+- Not an Opus/codec issue (failure occurs before encode, at `sd.InputStream` open).
+- Not the same as the earlier **output** `-9985` at first launch (that path was partially fixed); this is **input capture** during **runtime device change**.
+
+### Workarounds
+
+- Prefer **`default`**, **`pipewire`**, or **`pulse`** entries in Input mic — avoid raw `hw:…` USB/HDA nodes unless you know they are free.
+- Close other apps using the mic (browser, OBS, Zoom) before switching.
+- If switch fails: restart `bbc`, or log out/in to reset PipeWire (`systemctl --user restart pipewire wireplumber`).
+- After a failed switch, verify the meter still moves; if not, restart the app (see `_enabled` bug above).
+
+### Proposed fix (not implemented — report only)
+
+- Surface mic-switch failures in the UI (toast/dialog) when preferred device fails, including whether fallback was used.
+- After successful `start()`, set `_enabled = True`; preserve/restore level callback in `stop()`/`start()`.
+- Wrap `set_device()` / `set_input_device()` in try/except; on total failure, leave previous device or show recoverable error.
+- Prefer virtual routes (`default` / `pipewire` / `pulse`) in the dropdown or mark raw hw nodes as advanced.
+- Optional delay or retry after `stop()` before opening new device; or use PipeWire-native device selection when available.
+- Consider opening only devices that match the active host route rather than arbitrary hw indices during hot-swap.
+

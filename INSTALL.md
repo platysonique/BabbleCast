@@ -49,6 +49,7 @@ bbc server --name "My Hub"
 | mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | Fixed in current tree — see [docs/known-issues.md](docs/known-issues.md) |
 | `PortAudioError: Device unavailable` / ALSA errors / Opus `silk/resampler` abort | See [docs/known-issues.md](docs/known-issues.md) — PortAudio path fixed; standalone silk abort on launch still open |
 | `QMouseEvent` has no attribute `globalPos` (right-click participant) | See [docs/known-issues.md](docs/known-issues.md) — PyQt6 API; use Tap button as workaround |
+| `Mic open failed on device … Device unavailable` when changing Input mic | See [docs/known-issues.md](docs/known-issues.md) — avoid raw ALSA hw devices; use `default`/`pipewire` |
 
 ---
 
