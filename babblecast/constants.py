@@ -12,4 +12,10 @@ UDP_MAGIC = b"BBC\x01"
 MAX_CHAT_LEN = 4096
 MAX_NAME_LEN = 64
 MAX_ROOM_NAME_LEN = 128
+MAX_TAP_REMINDER_LEN = 512
 DISCOVERY_STALE_SEC = 30
+
+
+def composite_participant_key(link_id: str, client_id: str) -> str:
+    """Unique speaker key when bridging multiple servers."""
+    return f"{link_id}:{client_id}"

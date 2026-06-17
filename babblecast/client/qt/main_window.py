@@ -1,4 +1,4 @@
-"""Main BabbleCast PyQt6 window."""
+"""Main BabbleCast PyQt6 window — multi-server bridge + Tap."""
 
 from __future__ import annotations
 
@@ -20,64 +20,84 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
+from babblecast.client.bridge import BridgeManager
 from babblecast.client.qt.participant_widget import ParticipantWidget
+from babblecast.client.qt.server_link_widget import ServerLinkWidget
 from babblecast.client.qt.styles import STYLESHEET
-from babblecast.client.session import ClientSession
+from babblecast.client.qt.tap_chat_dialog import TapChatDialog
 from babblecast.config import get_settings, save_settings
+from babblecast.constants import composite_participant_key
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
 from babblecast.server.embedded import EmbeddedServer
+from babblecast.taps import get_tap_store
 
 
-class _UiBridge(QObject):
-    """Marshals background-thread session/discovery callbacks onto the Qt GUI thread."""
+class _UiSignals(QObject):
+    """Marshals background-thread callbacks onto the Qt GUI thread."""
 
+    link_connected = pyqtSignal(str)
+    link_disconnected = pyqtSignal(str, str)
+    presence = pyqtSignal(str, str, list)
+    chat = pyqtSignal(str, dict)
+    rooms = pyqtSignal(str, list)
+    error = pyqtSignal(str, str)
+    tap_received = pyqtSignal(str, dict)
+    tap_chat = pyqtSignal(str, dict)
+    tap_open = pyqtSignal(str, str)
+    tap_end = pyqtSignal(str, str)
     servers_found = pyqtSignal(list)
-    connected = pyqtSignal()
-    disconnected = pyqtSignal(str)
-    error = pyqtSignal(str)
-    presence = pyqtSignal(str, list)
-    chat = pyqtSignal(dict)
-    rooms = pyqtSignal(list)
 
 
 class MainWindow(QMainWindow):
-    status_message = pyqtSignal(str)
-
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("BabbleCast")
-        self.setMinimumSize(960, 640)
+        self.setMinimumSize(1024, 680)
         self.setStyleSheet(STYLESHEET)
         self._settings = get_settings()
-        self._bridge = _UiBridge()
-        self._bridge.servers_found.connect(self._on_servers_discovered)
-        self._bridge.connected.connect(self._on_connected)
-        self._bridge.disconnected.connect(self._on_disconnected)
-        self._bridge.error.connect(self._on_error)
-        self._bridge.presence.connect(self._on_presence)
-        self._bridge.chat.connect(self._on_chat)
-        self._bridge.rooms.connect(self._on_rooms)
-        self._session = ClientSession(
-            on_presence=lambda rid, p: self._bridge.presence.emit(rid, p),
-            on_chat=lambda d: self._bridge.chat.emit(d),
-            on_rooms=lambda r: self._bridge.rooms.emit(r),
-            on_connected=lambda: self._bridge.connected.emit(),
-            on_disconnected=lambda r: self._bridge.disconnected.emit(r),
-            on_error=lambda m: self._bridge.error.emit(m),
+        self._ui = _UiSignals()
+        self._ui.servers_found.connect(self._on_servers_discovered)
+        self._ui.link_connected.connect(self._on_link_connected)
+        self._ui.link_disconnected.connect(self._on_link_disconnected)
+        self._ui.error.connect(self._on_error)
+        self._ui.presence.connect(self._on_presence)
+        self._ui.chat.connect(self._on_chat)
+        self._ui.rooms.connect(self._on_rooms)
+        self._ui.tap_received.connect(self._on_tap_received)
+        self._ui.tap_chat.connect(self._on_tap_chat)
+        self._ui.tap_open.connect(self._on_tap_open)
+        self._ui.tap_end.connect(self._on_tap_end)
+
+        self._bridge = BridgeManager(
+            on_link_connected=lambda lid: self._ui.link_connected.emit(lid),
+            on_link_disconnected=lambda lid, r: self._ui.link_disconnected.emit(lid, r),
+            on_presence=lambda lid, rid, p: self._ui.presence.emit(lid, rid, p),
+            on_chat=lambda lid, d: self._ui.chat.emit(lid, d),
+            on_rooms=lambda lid, r: self._ui.rooms.emit(lid, r),
+            on_error=lambda lid, m: self._ui.error.emit(lid, m),
+            on_tap_received=lambda lid, d: self._ui.tap_received.emit(lid, d),
+            on_tap_chat=lambda lid, d: self._ui.tap_chat.emit(lid, d),
+            on_tap_open=lambda lid, tid: self._ui.tap_open.emit(lid, tid),
+            on_tap_end=lambda lid, tid: self._ui.tap_end.emit(lid, tid),
         )
         self._embedded = EmbeddedServer(server_name=socket.gethostname())
-        self._discovery = ServerDiscovery(on_update=lambda s: self._bridge.servers_found.emit(s))
+        self._discovery = ServerDiscovery(on_update=lambda s: self._ui.servers_found.emit(s))
         self._participant_widgets: dict[str, ParticipantWidget] = {}
+        self._link_widgets: dict[str, ServerLinkWidget] = {}
+        self._presence_by_link: dict[str, list[dict]] = {}
+        self._active_link_id: str | None = None
         self._self_muted = False
         self._ptt_held = False
         self._servers: list[DiscoveredServer] = []
+        self._tap_ids: dict[tuple[str, str], str] = {}
+        self._tap_dialogs: dict[tuple[str, str], TapChatDialog] = {}
+        self._peer_names: dict[tuple[str, str], str] = {}
 
         self._build_ui()
         self._load_devices()
@@ -87,40 +107,55 @@ class MainWindow(QMainWindow):
             self.setGeometry(*self._settings.window_geometry)
 
         self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self._refresh_ui_state)
-        self._status_timer.start(100)
+        self._status_timer.timeout.connect(self._refresh_status)
+        self._status_timer.start(500)
 
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
 
-        # Left — servers & rooms
         left = QVBoxLayout()
         title = QLabel("BabbleCast")
         title.setObjectName("title")
         left.addWidget(title)
 
-        self._status = QLabel("Offline")
+        self._status = QLabel("Offline — connect to one or more servers")
         self._status.setObjectName("status")
+        self._status.setWordWrap(True)
         left.addWidget(self._status)
 
-        srv_group = QGroupBox("Servers")
-        srv_layout = QVBoxLayout(srv_group)
+        discover_group = QGroupBox("Discover")
+        discover_layout = QVBoxLayout(discover_group)
         self._server_list = QListWidget()
         self._server_list.itemDoubleClicked.connect(self._connect_selected_server)
-        srv_layout.addWidget(self._server_list)
-        srv_btns = QHBoxLayout()
+        discover_layout.addWidget(self._server_list)
+        discover_btns = QHBoxLayout()
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.clicked.connect(self._connect_selected_server)
         self._host_server_btn = QPushButton("Host Server")
         self._host_server_btn.clicked.connect(self._toggle_host)
-        srv_btns.addWidget(self._connect_btn)
-        srv_btns.addWidget(self._host_server_btn)
-        srv_layout.addLayout(srv_btns)
-        left.addWidget(srv_group)
+        discover_btns.addWidget(self._connect_btn)
+        discover_btns.addWidget(self._host_server_btn)
+        discover_layout.addLayout(discover_btns)
+        left.addWidget(discover_group)
 
-        room_group = QGroupBox("Rooms")
+        connected_group = QGroupBox("Connected (mixed audio)")
+        connected_layout = QVBoxLayout(connected_group)
+        self._connected_scroll = QScrollArea()
+        self._connected_scroll.setWidgetResizable(True)
+        self._connected_container = QWidget()
+        self._connected_layout = QVBoxLayout(self._connected_container)
+        self._connected_layout.addStretch()
+        self._connected_scroll.setWidget(self._connected_container)
+        connected_layout.addWidget(self._connected_scroll)
+        hint = QLabel("🔊 = mute hearing · 🎤 = mute mic to that server only")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #565f89; font-size: 11px;")
+        connected_layout.addWidget(hint)
+        left.addWidget(connected_group)
+
+        room_group = QGroupBox("Rooms (active server)")
         room_layout = QVBoxLayout(room_group)
         self._room_list = QListWidget()
         self._room_list.itemDoubleClicked.connect(self._join_selected_room)
@@ -144,9 +179,8 @@ class MainWindow(QMainWindow):
         left.addStretch()
         root.addLayout(left, 1)
 
-        # Center — participants
         center = QVBoxLayout()
-        part_group = QGroupBox("In Room")
+        part_group = QGroupBox("In Room (all connected servers)")
         part_layout = QVBoxLayout(part_group)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -155,9 +189,13 @@ class MainWindow(QMainWindow):
         self._participants_layout.addStretch()
         scroll.setWidget(self._participants_container)
         part_layout.addWidget(scroll)
+        tap_hint = QLabel("Tap = nudge · 👆 highlight = tap waiting · click name to open private tap chat")
+        tap_hint.setWordWrap(True)
+        tap_hint.setStyleSheet("color: #565f89; font-size: 11px;")
+        part_layout.addWidget(tap_hint)
         center.addWidget(part_group, 2)
 
-        chat_group = QGroupBox("Text Chat")
+        chat_group = QGroupBox("Text Chat (active server)")
         chat_layout = QVBoxLayout(chat_group)
         self._chat_log = QTextEdit()
         self._chat_log.setReadOnly(True)
@@ -174,9 +212,8 @@ class MainWindow(QMainWindow):
         center.addWidget(chat_group, 1)
         root.addLayout(center, 3)
 
-        # Right — audio controls
         right = QVBoxLayout()
-        audio_group = QGroupBox("Audio")
+        audio_group = QGroupBox("Audio (shared across servers)")
         audio_layout = QVBoxLayout(audio_group)
 
         audio_layout.addWidget(QLabel("Microphone"))
@@ -208,7 +245,7 @@ class MainWindow(QMainWindow):
         audio_layout.addWidget(self._noise_label)
 
         btn_row = QHBoxLayout()
-        self._mute_btn = QPushButton("Mute")
+        self._mute_btn = QPushButton("Mute All")
         self._mute_btn.setCheckable(True)
         self._mute_btn.setObjectName("danger")
         self._mute_btn.toggled.connect(self._toggle_mute)
@@ -220,12 +257,13 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._ptt_btn)
         audio_layout.addLayout(btn_row)
 
-        hint = QLabel(
-            "Uses shared audio streams — does not hijack Spotify, YouTube, or system audio."
+        audio_hint = QLabel(
+            "One mic and one speaker mix every connected server. "
+            "Per-server mutes are in the Connected list."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #565f89; font-size: 11px;")
-        audio_layout.addWidget(hint)
+        audio_hint.setWordWrap(True)
+        audio_hint.setStyleSheet("color: #565f89; font-size: 11px;")
+        audio_layout.addWidget(audio_hint)
         right.addWidget(audio_group)
         right.addStretch()
         root.addLayout(right, 1)
@@ -237,8 +275,7 @@ class MainWindow(QMainWindow):
         self._output_combo.clear()
         self._input_devices = list_input_devices()
         self._output_devices = list_output_devices()
-        sel_in = 0
-        sel_out = 0
+        sel_in = sel_out = 0
         for i, dev in enumerate(self._input_devices):
             self._input_combo.addItem(dev.label, dev.storage_key)
             if self._settings.input_device == dev.storage_key:
@@ -266,23 +303,28 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, (s.host, s.ws_port))
             self._server_list.addItem(item)
 
+    def _already_connected(self, host: str, port: int) -> bool:
+        for link in self._bridge.links:
+            if link.host == host and link.port == port and link.connected:
+                return True
+        return False
+
     def _connect_selected_server(self) -> None:
-        if self._session.connected:
-            self._session.disconnect()
-            self._status.setText("Disconnected")
-            return
         item = self._server_list.currentItem()
         if item:
             host, port = item.data(Qt.ItemDataRole.UserRole)
             self._connect(host, port)
 
     def _connect(self, host: str, port: int) -> None:
+        if self._already_connected(host, port):
+            self._status.setText(f"Already connected to {host}:{port}")
+            return
         self._save_name()
         self._settings.display_name = self._name_edit.text().strip()
         save_settings(self._settings)
-        self._session.update_settings(self._settings)
+        self._bridge.update_settings(self._settings)
         self._status.setText(f"Connecting to {host}:{port}…")
-        self._session.connect(host, port)
+        self._bridge.connect(host, port)
 
     def _toggle_host(self) -> None:
         if self._embedded.running:
@@ -295,31 +337,140 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self._auto_connect_local)
 
     def _auto_connect_local(self) -> None:
-        if self._embedded.running and not self._session.connected:
+        if self._embedded.running:
             self._connect(self._embedded.host, self._embedded.ws_port)
 
-    def _on_connected(self) -> None:
-        self._status.setText("Connected")
-        self._session.request_rooms()
+    def _add_link_widget(self, link_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        if not link or link_id in self._link_widgets:
+            return
+        w = ServerLinkWidget(link_id, link.label)
+        w.listen_mute_toggled.connect(self._on_listen_mute)
+        w.mic_mute_toggled.connect(self._on_mic_mute)
+        w.disconnect_requested.connect(self._disconnect_link)
+        w.selected.connect(self._set_active_link)
+        self._link_widgets[link_id] = w
+        self._connected_layout.insertWidget(self._connected_layout.count() - 1, w)
+        if not self._active_link_id:
+            self._set_active_link(link_id)
 
-    def _on_disconnected(self, reason: str) -> None:
-        self._status.setText(f"Offline — {reason}")
-        self._clear_participants()
+    def _remove_link_widget(self, link_id: str) -> None:
+        w = self._link_widgets.pop(link_id, None)
+        if w:
+            w.deleteLater()
+        self._presence_by_link.pop(link_id, None)
+        if self._active_link_id == link_id:
+            remaining = list(self._link_widgets.keys())
+            self._active_link_id = remaining[0] if remaining else None
+            self._room_list.clear()
+            if self._active_link_id:
+                self._bridge.request_rooms(self._active_link_id)
+        self._rebuild_participants()
 
-    def _on_error(self, message: str) -> None:
-        QMessageBox.warning(self, "BabbleCast", message)
+    def _on_link_connected(self, link_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        label = link.label if link else link_id
+        self._add_link_widget(link_id)
+        if link:
+            self._link_widgets[link_id].update_label(link.label)
+        self._bridge.request_rooms(link_id)
+        self._refresh_status()
+        self._status.setText(f"Connected — {label}")
 
-    def _on_presence(self, _room_id: str, participants: list[dict]) -> None:
-        self._last_participants = participants
-        self._update_participant_widgets(participants)
+    def _on_link_disconnected(self, link_id: str, reason: str) -> None:
+        self._remove_link_widget(link_id)
+        for key in list(self._tap_ids):
+            if key[0] == link_id:
+                self._tap_ids.pop(key, None)
+        for key, dlg in list(self._tap_dialogs.items()):
+            if key[0] == link_id:
+                dlg.close()
+                self._tap_dialogs.pop(key, None)
+        self._refresh_status()
+        if not self._bridge.links:
+            self._status.setText(f"Offline — {reason}")
 
-    def _on_chat(self, data: dict) -> None:
+    def _on_error(self, link_id: str, message: str) -> None:
+        link = self._bridge.get_link(link_id)
+        label = link.label if link else link_id
+        QMessageBox.warning(self, "BabbleCast", f"{label}: {message}")
+
+    def _set_active_link(self, link_id: str) -> None:
+        self._active_link_id = link_id
+        for lid, w in self._link_widgets.items():
+            w.set_active(lid == link_id)
+        link = self._bridge.get_link(link_id)
+        if link:
+            self._status.setText(f"Active server: {link.label}")
+        self._bridge.request_rooms(link_id)
+        self._chat_log.clear()
+        self._chat_log.append(f"<i>Chat for {link.label if link else link_id}</i>")
+
+    def _on_listen_mute(self, link_id: str, muted: bool) -> None:
+        self._bridge.set_listen_muted(link_id, muted)
+        w = self._link_widgets.get(link_id)
+        if w:
+            w._listen_btn.setText("🔇" if muted else "🔊")
+
+    def _on_mic_mute(self, link_id: str, muted: bool) -> None:
+        self._bridge.set_mic_muted(link_id, muted)
+        w = self._link_widgets.get(link_id)
+        if w:
+            w._mic_btn.setText("🎤✕" if muted else "🎤")
+
+    def _disconnect_link(self, link_id: str) -> None:
+        self._bridge.disconnect(link_id)
+
+    def _on_presence(self, link_id: str, _room_id: str, participants: list[dict]) -> None:
+        self._presence_by_link[link_id] = participants
+        self._rebuild_participants()
+
+    def _rebuild_participants(self) -> None:
+        seen: set[str] = set()
+        link = self._bridge.get_link
+        for lid, participants in self._presence_by_link.items():
+            ls = link(lid)
+            server_label = ls.label if ls else lid
+            my_id = ls.client_id if ls else ""
+            for p in participants:
+                cid = str(p.get("client_id", ""))
+                composite = composite_participant_key(lid, cid)
+                seen.add(composite)
+                self._peer_names[(lid, cid)] = str(p.get("name", "?"))
+                pending = ls.pending_taps if ls else set()
+                if composite not in self._participant_widgets:
+                    w = ParticipantWidget(composite, f"{p.get('name', '?')} · {server_label}", is_self=(cid == my_id))
+                    w.volume_changed.connect(self._bridge.set_participant_volume)
+                    w.mute_toggled.connect(self._bridge.set_participant_muted)
+                    w.tap_requested.connect(lambda pid, ll=lid: self._send_tap(ll, pid))
+                    w.name_clicked.connect(lambda pid, ll=lid: self._open_tap_for_peer(ll, pid))
+                    w.reopen_tap_chat.connect(lambda sid, ll=lid: self._reinsert_saved_tap(ll, sid))
+                    self._participant_widgets[composite] = w
+                    self._participants_layout.insertWidget(self._participants_layout.count() - 1, w)
+                w = self._participant_widgets[composite]
+                w.set_tapped(cid in pending)
+                w.update_state(
+                    name=f"{p.get('name', '?')} · {server_label}",
+                    voice_level=float(p.get("voice_level", 0)),
+                    muted=bool(p.get("muted", False)),
+                    speaking=bool(p.get("speaking", False)),
+                    volume=float(p.get("volume", 1.0)),
+                )
+        for key in list(self._participant_widgets):
+            if key not in seen:
+                self._participant_widgets.pop(key).deleteLater()
+
+    def _on_chat(self, link_id: str, data: dict) -> None:
+        if link_id != self._active_link_id:
+            return
         name = data.get("name", "?")
         text = data.get("text", "")
         ts = datetime.now().strftime("%H:%M")
         self._chat_log.append(f"<b>[{ts}] {name}</b>: {text}")
 
-    def _on_rooms(self, rooms: list[dict]) -> None:
+    def _on_rooms(self, link_id: str, rooms: list[dict]) -> None:
+        if link_id != self._active_link_id:
+            return
         self._room_list.clear()
         for r in rooms:
             label = f"{r.get('name', 'Room')} ({r.get('member_count', 0)})"
@@ -328,98 +479,136 @@ class MainWindow(QMainWindow):
             self._room_list.addItem(item)
 
     def _create_room(self) -> None:
+        if not self._active_link_id:
+            return
         name = self._new_room_edit.text().strip()
         if name:
-            self._session.create_room(name)
+            self._bridge.create_room(self._active_link_id, name)
             self._new_room_edit.clear()
 
     def _join_selected_room(self) -> None:
+        if not self._active_link_id:
+            return
         item = self._room_list.currentItem()
         if item:
-            room_id = item.data(Qt.ItemDataRole.UserRole)
-            self._session.join_room(str(room_id))
+            self._bridge.join_room(self._active_link_id, str(item.data(Qt.ItemDataRole.UserRole)))
 
     def _send_chat(self) -> None:
+        if not self._active_link_id:
+            return
         text = self._chat_input.text().strip()
         if text:
-            self._session.send_chat(text)
+            self._bridge.send_chat(self._active_link_id, text)
             self._chat_input.clear()
 
     def _toggle_mute(self, checked: bool) -> None:
         self._self_muted = checked
-        self._session.set_muted(checked)
+        self._bridge.set_global_muted(checked)
 
     def _set_ptt(self, active: bool) -> None:
         self._ptt_held = active
         self._ptt_btn.setObjectName("pttActive" if active else "")
         self._ptt_btn.setStyleSheet("")
-        self._session.set_ptt(active)
+        self._bridge.set_global_ptt(active)
 
     def _gate_changed(self, value: int) -> None:
         self._gate_label.setText(f"{value} dB")
-        self._session.set_gate_db(float(value))
+        self._bridge.set_gate_db(float(value))
 
     def _noise_changed(self, value: int) -> None:
         self._noise_label.setText(f"{value}%")
-        self._session.set_noise_suppression(value / 100.0)
+        self._bridge.set_noise_suppression(value / 100.0)
 
     def _input_changed(self, index: int) -> None:
-        if index < 0:
-            return
-        key = self._input_combo.itemData(index)
-        self._session.set_input_device(key)
+        if index >= 0:
+            self._bridge.set_input_device(self._input_combo.itemData(index))
 
     def _output_changed(self, index: int) -> None:
-        if index < 0:
+        if index >= 0:
+            self._bridge.set_output_device(self._output_combo.itemData(index))
+
+    def _send_tap(self, link_id: str, target_id: str) -> None:
+        self._bridge.send_tap(link_id, target_id)
+
+    def _on_tap_received(self, link_id: str, data: dict) -> None:
+        tap_id = str(data.get("tap_id", ""))
+        from_id = str(data.get("from_id", ""))
+        from_name = str(data.get("from_name", "?"))
+        target_id = str(data.get("target_id", ""))
+        target_name = str(data.get("target_name", ""))
+        peer_id = target_id if data.get("self_sent") else from_id
+        peer_name = target_name if data.get("self_sent") else from_name
+        if tap_id and peer_id:
+            self._tap_ids[(link_id, peer_id)] = tap_id
+            self._peer_names[(link_id, peer_id)] = peer_name
+        if not data.get("self_sent"):
+            self._rebuild_participants()
+            link = self._bridge.get_link(link_id)
+            if link:
+                self._status.setText(f"Tap from {from_name} on {link.label} — click their name")
+
+    def _open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
+        tap_id = self._tap_ids.get((link_id, peer_id))
+        if not tap_id:
             return
-        key = self._output_combo.itemData(index)
-        self._session.set_output_device(key)
+        key = (link_id, tap_id)
+        if key in self._tap_dialogs:
+            self._tap_dialogs[key].raise_()
+            self._tap_dialogs[key].activateWindow()
+            return
+        link = self._bridge.get_link(link_id)
+        peer_name = self._peer_names.get((link_id, peer_id), peer_id)
+        dlg = TapChatDialog(
+            self._bridge,
+            link_id,
+            tap_id,
+            peer_id,
+            peer_name,
+            link.label if link else link_id,
+            parent=self,
+        )
+        dlg.finished.connect(lambda _r, k=key: self._tap_dialogs.pop(k, None))
+        self._tap_dialogs[key] = dlg
+        dlg.show()
 
-    def _update_participant_widgets(self, participants: list[dict]) -> None:
-        seen = set()
-        my_id = self._session.client_id
-        for p in participants:
-            cid = p.get("client_id", "")
-            seen.add(cid)
-            if cid not in self._participant_widgets:
-                w = ParticipantWidget(cid, p.get("name", "?"), is_self=(cid == my_id))
-                w.volume_changed.connect(self._session.set_participant_volume)
-                w.mute_toggled.connect(self._session.set_participant_muted)
-                self._participant_widgets[cid] = w
-                self._participants_layout.insertWidget(self._participants_layout.count() - 1, w)
-            self._participant_widgets[cid].update_state(
-                name=p.get("name", "?"),
-                voice_level=float(p.get("voice_level", 0)),
-                muted=bool(p.get("muted", False)),
-                speaking=bool(p.get("speaking", False)),
-                volume=float(p.get("volume", 1.0)),
-            )
-        for cid in list(self._participant_widgets):
-            if cid not in seen:
-                w = self._participant_widgets.pop(cid)
-                w.deleteLater()
+    def _on_tap_chat(self, link_id: str, data: dict) -> None:
+        tap_id = str(data.get("tap_id", ""))
+        key = (link_id, tap_id)
+        dlg = self._tap_dialogs.get(key)
+        if dlg:
+            dlg.append_message(data)
 
-    def _clear_participants(self) -> None:
-        for w in self._participant_widgets.values():
-            w.deleteLater()
-        self._participant_widgets.clear()
+    def _on_tap_open(self, link_id: str, tap_id: str) -> None:
+        pass
 
-    def _refresh_ui_state(self) -> None:
-        if self._session.connected:
-            self._connect_btn.setText("Disconnect")
-        else:
-            self._connect_btn.setText("Connect")
+    def _on_tap_end(self, link_id: str, tap_id: str) -> None:
+        key = (link_id, tap_id)
+        dlg = self._tap_dialogs.pop(key, None)
+        if dlg:
+            dlg.close()
+
+    def _reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
+        for tap in get_tap_store().items:
+            if tap.save_id == save_id:
+                lines = [f"{m.get('name', '?')}: {m.get('text', '')}" for m in tap.messages]
+                summary = "\n".join(lines) or tap.reminder
+                if self._active_link_id == link_id and summary:
+                    self._bridge.send_chat(link_id, f"[Saved tap — {tap.reminder}]\n{summary}")
+                break
+
+    def _refresh_status(self) -> None:
+        n = sum(1 for l in self._bridge.links if l.connected)
+        if n:
+            self._status.setText(f"{n} server(s) connected — mixed audio active")
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
-            if self._self_muted:
-                self._set_ptt(True)
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self._self_muted:
+            self._set_ptt(True)
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
-            if self._self_muted:
-                self._set_ptt(False)
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self._self_muted:
+            self._set_ptt(False)
         super().keyReleaseEvent(event)
 
     def closeEvent(self, event) -> None:
@@ -427,6 +616,6 @@ class MainWindow(QMainWindow):
         self._settings.window_geometry = [geo.x(), geo.y(), geo.width(), geo.height()]
         save_settings(self._settings)
         self._discovery.stop()
-        self._session.disconnect()
+        self._bridge.disconnect_all()
         self._embedded.stop()
         super().closeEvent(event)

@@ -176,10 +176,16 @@ class ServerDiscovery:
             self._servers[host] = entry
         self._emit()
 
-    def _on_service(self, zc: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange) -> None:
+    def _on_service(
+        self,
+        zeroconf: Zeroconf,
+        service_type: str,
+        name: str,
+        state_change: ServiceStateChange,
+    ) -> None:
         if state_change is ServiceStateChange.Removed:
             return
-        info = zc.get_service_info(service_type, name, timeout=2000)
+        info = zeroconf.get_service_info(service_type, name, timeout=2000)
         if info:
             self._resolve(name, info)
 

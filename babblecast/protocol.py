@@ -37,6 +37,11 @@ class MsgType(str, Enum):
     ERROR = "error"
     PING = "ping"
     PONG = "pong"
+    TAP = "tap"
+    TAP_RECEIVED = "tap_received"
+    TAP_OPEN = "tap_open"
+    TAP_CHAT = "tap_chat"
+    TAP_END = "tap_end"
 
 
 def new_id() -> str:

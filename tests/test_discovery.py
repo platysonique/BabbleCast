@@ -66,3 +66,18 @@ def test_embedded_server_starts() -> None:
         time.sleep(0.1)
     assert srv.running, "EmbeddedServer did not reach running state"
     srv.stop()
+
+
+def test_discovery_handler_accepts_zeroconf_keyword() -> None:
+    """zeroconf >= 0.132 calls ServiceBrowser handlers with zeroconf= keyword."""
+    from babblecast.discovery import ServerDiscovery
+    from zeroconf import ServiceStateChange, Zeroconf
+
+    disc = ServerDiscovery()
+    # Must not raise TypeError (signature must accept zeroconf= keyword).
+    disc._on_service(
+        zeroconf=Zeroconf(),
+        service_type="_babblecast._tcp.local.",
+        name="test._babblecast._tcp.local.",
+        state_change=ServiceStateChange.Removed,
+    )

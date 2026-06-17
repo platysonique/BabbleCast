@@ -46,7 +46,7 @@ bbc server --name "My Hub"
 | `opuslib` / Opus errors | `sudo apt-get install libopus0` |
 | PyQt6 fails to start / GL errors | Install `libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0` |
 | `bbc: command not found` | Use full path or re-run `install.sh`; check `/usr/local/bin` and `~/.local/bin` |
-| mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | See [docs/known-issues.md](docs/known-issues.md) |
+| mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | Fixed in current tree — see [docs/known-issues.md](docs/known-issues.md) |
 
 ---
 
@@ -101,3 +101,48 @@ On Linux: `python scripts/linux_smoke_check.py`
 BabbleCast is a **native Linux app** on Linux (`bbc` via PyQt6 + PortAudio). Running Windows `python.exe` under Wine is unsupported and will crash (Wine missing `CopyFile2`, PyQt6, PortAudio, etc.).
 
 Use the Linux install path above, or a real Windows machine / VM for Windows builds.
+
+---
+
+## Android (sideload)
+
+### Build (Linux)
+
+Requires Android SDK/NDK, Java 17 JDK, and buildozer:
+
+```bash
+bash packaging/android/build.sh
+```
+
+APK output: `packaging/android/releases/babblecast-*-arm64-v8a-debug.apk` (also copied under `mobile/bin/` during build; about 33 MB).
+
+### Install on your phone
+
+1. Enable **Developer options** → **USB debugging** (or copy the APK to the phone and allow **Install unknown apps**).
+2. Connect USB, or transfer the APK (email, Drive, `adb push`, etc.).
+3. Install:
+
+```bash
+adb install -r packaging/android/releases/babblecast-1.0.0-arm64-v8a-debug.apk
+```
+
+Or open the APK file on the phone and tap Install.
+
+### Connect to a desktop server
+
+1. On your PC: `bbc server --name "Studio"` (or Host Server in the desktop app).
+2. Note your PC’s **LAN IP** (e.g. `192.168.1.10`) — not `127.0.0.1` from the phone.
+3. In the BabbleCast mobile app: enter that IP, port **8765**, tap **Connect**.
+4. Allow **Microphone** when prompted.
+
+Voice uses Android `AudioRecord`/`AudioTrack`; mDNS discovery works on the same Wi‑Fi (manual IP always works).
+
+---
+
+## iOS
+
+**Cannot be built or sideloaded from this Linux machine.** Apple requires **macOS + Xcode** to compile and sign iOS apps.
+
+If you have a Mac: see `packaging/ios/README.md` and `mobile/build_ios.sh`.
+
+Ways to get BabbleCast on iPhone after a Mac build: Xcode → Run on device (free Apple ID), TestFlight, or AltStore/SideStore (still needs an IPA built on Mac first).

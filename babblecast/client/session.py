@@ -12,8 +12,9 @@ from typing import Any
 import websockets
 
 from babblecast.audio.codec import OpusCodec
-from babblecast.audio.engine import MicCapture, SpeakerOutput
+from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
+from babblecast.constants import composite_participant_key
 from babblecast.config import UserSettings, get_settings, save_settings
 from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id
 
@@ -29,6 +30,14 @@ class ClientSession:
         on_connected: Callable[[], None] | None = None,
         on_disconnected: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        on_tap_received: Callable[[dict], None] | None = None,
+        on_tap_chat: Callable[[dict], None] | None = None,
+        on_tap_open: Callable[[str], None] | None = None,
+        on_tap_end: Callable[[str], None] | None = None,
+        *,
+        link_id: str = "",
+        bridge_speaker: Any | None = None,
+        listen_muted_getter: Callable[[], bool] | None = None,
     ) -> None:
         self._on_presence = on_presence
         self._on_chat = on_chat
@@ -36,6 +45,14 @@ class ClientSession:
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_error = on_error
+        self._on_tap_received = on_tap_received
+        self._on_tap_chat = on_tap_chat
+        self._on_tap_open = on_tap_open
+        self._on_tap_end = on_tap_end
+        self._link_id = link_id
+        self._bridge_speaker = bridge_speaker
+        self._listen_muted_getter = listen_muted_getter
+        self._bridge_mic_muted = False
         self._settings = get_settings()
         self._client_id = new_id()
         self._room_id: str | None = None
@@ -51,13 +68,18 @@ class ClientSession:
         self._codec = OpusCodec()
         self._gate = NoiseGate(threshold_db=self._settings.gate_threshold_db)
         self._suppressor = NoiseSuppressor(strength=self._settings.noise_suppression)
-        self._mic: MicCapture | None = None
-        self._speaker: SpeakerOutput | None = None
+        self._mic = None
+        self._speaker = None
         self._host = ""
         self._ws_port = 8765
+        self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
         self._last_level_sent = 0.0
+
+    @property
+    def link_id(self) -> str:
+        return self._link_id
 
     @property
     def client_id(self) -> str:
@@ -68,18 +90,36 @@ class ClientSession:
         return self._room_id
 
     @property
+    def server_name(self) -> str:
+        return self._server_name
+
+    @property
     def connected(self) -> bool:
         return self._running and self._ws is not None
 
+    @property
+    def is_bridge(self) -> bool:
+        return bool(self._link_id and self._bridge_speaker is not None)
+
+    def set_bridge_mic_muted(self, muted: bool) -> None:
+        self._bridge_mic_muted = muted
+
+    def _participant_key(self, client_id: str) -> str:
+        if self._link_id:
+            return composite_participant_key(self._link_id, client_id)
+        return client_id
+
     def _setup_audio(self) -> None:
-        self._mic = MicCapture(
+        if self.is_bridge:
+            return
+        self._mic = create_mic(
             device_key=self._settings.input_device,
             gate=self._gate,
             suppressor=self._suppressor,
             on_frame=self._on_audio_frame,
             on_level=self._on_voice_level,
         )
-        self._speaker = SpeakerOutput(
+        self._speaker = create_speaker(
             device_key=self._settings.output_device,
             master_volume=self._settings.output_volume,
         )
@@ -88,8 +128,8 @@ class ClientSession:
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
 
-    def _on_audio_frame(self, pcm: bytes, _level: float) -> None:
-        if not self._room_id or not self._udp_sock:
+    def send_voice_pcm(self, pcm: bytes) -> None:
+        if self._bridge_mic_muted or not self._room_id or not self._udp_sock:
             return
         try:
             opus = self._codec.encode(pcm)
@@ -107,6 +147,14 @@ class ClientSession:
             self._udp_sock.sendto(packet.encode(), (self._host, self._server_udp_port))
         except OSError:
             pass
+
+    def send_voice_level(self, level: float) -> None:
+        if self._bridge_mic_muted:
+            return
+        self._on_voice_level(level)
+
+    def _on_audio_frame(self, pcm: bytes, _level: float) -> None:
+        self.send_voice_pcm(pcm)
 
     def _on_voice_level(self, level: float) -> None:
         if not self._loop or not self._ws:
@@ -137,6 +185,8 @@ class ClientSession:
                 continue
             except OSError:
                 break
+            if self._listen_muted_getter and self._listen_muted_getter():
+                continue
             packet = VoicePacket.decode(data)
             if not packet or packet.sender_id == self._client_id:
                 continue
@@ -144,8 +194,9 @@ class ClientSession:
                 pcm = self._codec.decode(packet.opus_payload)
             except Exception:
                 continue
-            if self._speaker:
-                self._speaker.push_pcm(packet.sender_id, pcm)
+            speaker = self._bridge_speaker if self.is_bridge else self._speaker
+            if speaker:
+                speaker.push_pcm(self._participant_key(packet.sender_id), pcm)
 
     async def _send(self, message: str) -> None:
         if self._ws:
@@ -156,6 +207,7 @@ class ClientSession:
         if mtype == MsgType.WELCOME:
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
+            self._server_name = str(data.get("server_name", ""))
             self._server_udp_port = int(data.get("udp_port", 8766))
             await self._send(
                 encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
@@ -179,13 +231,29 @@ class ClientSession:
         if mtype == MsgType.JOINED:
             self._room_id = str(data.get("room_id", ""))
             return
+        if mtype == MsgType.TAP_RECEIVED:
+            if self._on_tap_received:
+                self._on_tap_received(data)
+            return
+        if mtype == MsgType.TAP_OPEN:
+            if self._on_tap_open:
+                self._on_tap_open(str(data.get("tap_id", "")))
+            return
+        if mtype == MsgType.TAP_CHAT:
+            if self._on_tap_chat:
+                self._on_tap_chat(data)
+            return
+        if mtype == MsgType.TAP_END:
+            if self._on_tap_end:
+                self._on_tap_end(str(data.get("tap_id", "")))
+            return
         if mtype == MsgType.ERROR:
             if self._on_error:
                 self._on_error(str(data.get("message", "Unknown error")))
             return
 
     def _start_audio(self) -> None:
-        if self._audio_started:
+        if self._audio_started or self.is_bridge:
             return
         try:
             if self._mic:
@@ -199,6 +267,8 @@ class ClientSession:
                 self._on_error(f"Audio unavailable: {exc}")
 
     def _stop_audio(self) -> None:
+        if self.is_bridge:
+            return
         if self._mic:
             self._mic.stop()
         if self._speaker:
@@ -250,9 +320,10 @@ class ClientSession:
         self._user_disconnect = False
         self._host = host
         self._ws_port = ws_port
-        self._settings.last_server_host = host
-        self._settings.last_server_port = ws_port
-        save_settings(self._settings)
+        if not self.is_bridge:
+            self._settings.last_server_host = host
+            self._settings.last_server_port = ws_port
+            save_settings(self._settings)
         self._setup_audio()
         self._start_udp()
         self._running = True
@@ -276,7 +347,7 @@ class ClientSession:
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
-        if self._on_disconnected:
+        if self._on_disconnected and self._user_disconnect:
             self._on_disconnected("Disconnected")
 
     def set_muted(self, muted: bool) -> None:
@@ -312,21 +383,37 @@ class ClientSession:
             self._speaker.set_device(device_key)
 
     def set_participant_volume(self, client_id: str, volume: float) -> None:
-        self._settings.per_user_volumes[client_id] = volume
+        key = self._participant_key(client_id)
+        self._settings.per_user_volumes[key] = volume
         save_settings(self._settings)
-        if self._speaker:
-            self._speaker.set_participant_volume(client_id, volume)
+        speaker = self._bridge_speaker if self.is_bridge else self._speaker
+        if speaker:
+            speaker.set_participant_volume(key, volume)
         self._send_async(encode_msg(MsgType.VOLUME, target_id=client_id, volume=volume))
 
     def set_participant_muted(self, client_id: str, muted: bool) -> None:
-        self._settings.per_user_muted[client_id] = muted
+        key = self._participant_key(client_id)
+        self._settings.per_user_muted[key] = muted
         save_settings(self._settings)
-        if self._speaker:
-            self._speaker.set_participant_muted(client_id, muted)
+        speaker = self._bridge_speaker if self.is_bridge else self._speaker
+        if speaker:
+            speaker.set_participant_muted(key, muted)
         self._send_async(encode_msg(MsgType.MUTE, target_id=client_id, muted=muted))
 
     def send_chat(self, text: str) -> None:
         self._send_async(encode_msg(MsgType.CHAT, text=text))
+
+    def send_tap(self, target_id: str, text: str = "") -> None:
+        self._send_async(encode_msg(MsgType.TAP, target_id=target_id, text=text))
+
+    def open_tap(self, tap_id: str) -> None:
+        self._send_async(encode_msg(MsgType.TAP_OPEN, tap_id=tap_id))
+
+    def send_tap_chat(self, tap_id: str, text: str) -> None:
+        self._send_async(encode_msg(MsgType.TAP_CHAT, tap_id=tap_id, text=text))
+
+    def end_tap(self, tap_id: str) -> None:
+        self._send_async(encode_msg(MsgType.TAP_END, tap_id=tap_id))
 
     def create_room(self, name: str) -> None:
         self._send_async(encode_msg(MsgType.CREATE_ROOM, name=name))

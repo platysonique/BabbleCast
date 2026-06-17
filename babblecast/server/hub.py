@@ -61,6 +61,14 @@ class Room:
     members: set[str] = field(default_factory=set)
 
 
+@dataclass
+class TapSession:
+    tap_id: str
+    initiator_id: str
+    target_id: str
+    opened: bool = False
+
+
 class BabbleCastHub:
     def __init__(
         self,
@@ -77,6 +85,7 @@ class BabbleCastHub:
         self.advertise = advertise
         self._clients: dict[str, ClientState] = {}
         self._rooms: dict[str, Room] = {}
+        self._tap_sessions: dict[str, TapSession] = {}
         self._ws_server = None
         self._udp_transport = None
         self._advertiser: ServerAdvertiser | None = None
@@ -231,6 +240,100 @@ class BabbleCastHub:
             port = int(data.get("port", 0))
             if host and port:
                 client.udp_addr = (host, port)
+            return
+
+        if mtype == MsgType.TAP:
+            target_id = str(data.get("target_id", ""))
+            preview = str(data.get("text", ""))[:200]
+            target = self._clients.get(target_id)
+            if not target:
+                await client.ws.send(encode_msg(MsgType.ERROR, message="User not found"))
+                return
+            tap_id = new_id()
+            self._tap_sessions[tap_id] = TapSession(tap_id, client.client_id, target_id)
+            await target.ws.send(
+                encode_msg(
+                    MsgType.TAP_RECEIVED,
+                    tap_id=tap_id,
+                    from_id=client.client_id,
+                    from_name=client.name,
+                    target_id=target_id,
+                    target_name=target.name,
+                    text=preview,
+                )
+            )
+            await client.ws.send(
+                encode_msg(
+                    MsgType.TAP_RECEIVED,
+                    tap_id=tap_id,
+                    from_id=client.client_id,
+                    from_name=client.name,
+                    target_id=target_id,
+                    target_name=target.name,
+                    text=preview,
+                    self_sent=True,
+                )
+            )
+            return
+
+        if mtype == MsgType.TAP_OPEN:
+            tap_id = str(data.get("tap_id", ""))
+            session = self._tap_sessions.get(tap_id)
+            if not session:
+                await client.ws.send(encode_msg(MsgType.ERROR, message="Tap not found"))
+                return
+            if client.client_id not in (session.initiator_id, session.target_id):
+                await client.ws.send(encode_msg(MsgType.ERROR, message="Not a tap participant"))
+                return
+            session.opened = True
+            for cid in (session.initiator_id, session.target_id):
+                peer = self._clients.get(cid)
+                if peer:
+                    await peer.ws.send(encode_msg(MsgType.TAP_OPEN, tap_id=tap_id))
+            return
+
+        if mtype == MsgType.TAP_CHAT:
+            tap_id = str(data.get("tap_id", ""))
+            text = clamp_chat(str(data.get("text", "")))
+            if not text:
+                return
+            session = self._tap_sessions.get(tap_id)
+            if not session or not session.opened:
+                await client.ws.send(encode_msg(MsgType.ERROR, message="Tap not open"))
+                return
+            if client.client_id not in (session.initiator_id, session.target_id):
+                return
+            other_id = (
+                session.target_id
+                if client.client_id == session.initiator_id
+                else session.initiator_id
+            )
+            other = self._clients.get(other_id)
+            payload = encode_msg(
+                MsgType.TAP_CHAT,
+                tap_id=tap_id,
+                from_id=client.client_id,
+                name=client.name,
+                text=text,
+                ts=asyncio.get_event_loop().time(),
+            )
+            await client.ws.send(payload)
+            if other:
+                await other.ws.send(payload)
+            return
+
+        if mtype == MsgType.TAP_END:
+            tap_id = str(data.get("tap_id", ""))
+            session = self._tap_sessions.pop(tap_id, None)
+            if not session:
+                return
+            if client.client_id not in (session.initiator_id, session.target_id):
+                return
+            msg = encode_msg(MsgType.TAP_END, tap_id=tap_id)
+            for cid in (session.initiator_id, session.target_id):
+                peer = self._clients.get(cid)
+                if peer:
+                    await peer.ws.send(msg)
             return
 
     async def _broadcast_all_rooms(self) -> None:

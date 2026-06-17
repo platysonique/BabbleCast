@@ -47,11 +47,14 @@ class NoiseSuppressor:
         self._profile: np.ndarray | None = None
         self._profile_frames = 0
 
-    def _ensure(self) -> None:
+    def _ensure(self) -> bool:
         if self._nr is None:
-            import noisereduce as nr
-
+            try:
+                import noisereduce as nr
+            except ImportError:
+                return False
             self._nr = nr
+        return True
 
     def set_strength(self, value: float) -> None:
         self.strength = max(0.0, min(1.0, value))
@@ -59,7 +62,8 @@ class NoiseSuppressor:
     def process(self, samples: np.ndarray) -> np.ndarray:
         if self.strength <= 0.01:
             return samples
-        self._ensure()
+        if not self._ensure():
+            return samples
         assert self._nr is not None
         float_samples = samples.astype(np.float32) / 32768.0
         if self._profile is None and self._profile_frames < 5:
