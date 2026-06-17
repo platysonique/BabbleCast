@@ -406,6 +406,13 @@ class BabbleCastHub:
             sender = self.hub._clients.get(packet.sender_id)
             if not sender or not sender.room_id or sender.room_id != packet.room_id:
                 return
+            registered = sender.udp_addr
+            if registered is None:
+                sender.udp_addr = addr
+            elif registered[1] != addr[1]:
+                # Port must match the client's bound UDP socket (anti-spoof).
+                return
+            # IP in udp_endpoint may differ from datagram source (loopback vs LAN).
             if sender.muted and not sender.ptt_active:
                 return
             room = self.hub._rooms.get(sender.room_id)

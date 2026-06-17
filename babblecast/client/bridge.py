@@ -103,8 +103,8 @@ class BridgeManager:
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
         try:
-            self._mic.start()
             self._speaker.start()
+            self._mic.start()
         except Exception as exc:
             logger.exception("Bridge audio startup failed")
             self._teardown_audio()
@@ -129,8 +129,13 @@ class BridgeManager:
     def _on_mic_frame(self, pcm: bytes, _level: float) -> None:
         for link_id, session in list(self._sessions.items()):
             link = self._links.get(link_id)
-            if link and not link.mic_muted and session.connected:
-                session.send_voice_pcm(pcm)
+            if (
+                link
+                and not link.mic_muted
+                and session.connected
+                and session.room_id
+            ):
+                session.send_voice_pcm(bytes(pcm))
 
     def _on_mic_level(self, level: float) -> None:
         for link_id, session in list(self._sessions.items()):

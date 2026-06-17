@@ -80,4 +80,6 @@ class NoiseSuppressor:
             prop_decrease=prop,
             stationary=True,
         )
+        if len(reduced) != len(float_samples):
+            return samples
         return (np.clip(reduced, -1.0, 1.0) * 32767.0).astype(np.int16)

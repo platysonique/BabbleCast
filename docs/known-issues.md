@@ -123,8 +123,45 @@ Aborted (core dumped)
 - `SpeakerOutput.start` / `MicCapture.start` — iterate fallbacks; roll back worker thread on failure.
 - `ClientSession._start_audio` — start speaker first; stop both on error; show dialog instead of crashing.
 - `BridgeManager._ensure_audio` — same cleanup; connect continues for chat if audio fails.
-- `OpusCodec` — pad/validate frame size; empty decode returns silence.
+- `OpusCodec` — pad/validate frame size; empty decode returns silence; `decode_plc()` for packet loss.
 - `NoiseSuppressor` — skip processing on frames shorter than 1024 samples.
+- `ClientSession.connect` — set `_running` before starting UDP receive thread (thread was exiting immediately).
+- `ClientSession.disconnect` — join UDP thread; jitter buffer + PLC on receive path.
+- `BabbleCastHub` — UDP relay verifies sender socket port (anti-spoof).
+
+---
+
+## Android UI (ScrollView debug layout)
+
+**Status:** Fixed (2026-06-17)  
+**Affects:** Android APK (`mobile/main.py`)
+
+### Symptom
+
+Single long ScrollView form; no theme; noise gate missing; looked like a debug screen.
+
+### Fix
+
+Tokyo Night dark theme (`mobile/theme.py`), bottom navigation (Connect / Live / Settings), card-based server list, gate slider on Settings tab. Branding uses hand-prepared assets only (`assets/bbcicon.png`, `assets/icon.png`) — no auto-crop script.
+
+---
+
+## Voice UDP receive thread never ran
+
+**Status:** Fixed (2026-06-17)  
+**Affects:** All clients (`babblecast/client/session.py`)
+
+### Symptom
+
+Connected and chat worked, but no incoming voice (relay packets sat in socket buffer).
+
+### Cause
+
+`_start_udp()` ran before `_running = True`, so the receive loop exited immediately.
+
+### Fix
+
+Set `_running = True` before spawning the UDP thread.
 
 ### Workaround (older builds or broken system audio)
 

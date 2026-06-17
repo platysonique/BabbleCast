@@ -47,3 +47,14 @@ def test_opus_codec_pads_short_pcm() -> None:
 def test_opus_codec_empty_packet_returns_silence() -> None:
     codec = OpusCodec()
     assert len(codec.decode(b"")) == FRAME_BYTES
+    assert len(codec.decode(b"\x01")) == FRAME_BYTES
+
+
+def test_opus_codec_encode_rejects_empty() -> None:
+    codec = OpusCodec()
+    assert codec.encode(b"") is None
+
+
+def test_opus_codec_oversized_packet_returns_silence() -> None:
+    codec = OpusCodec()
+    assert len(codec.decode(b"\xff" * 2000)) == FRAME_BYTES

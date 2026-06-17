@@ -13,8 +13,9 @@ import websockets
 
 from babblecast.audio.codec import OpusCodec
 from babblecast.audio.factory import create_mic, create_speaker
+from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
-from babblecast.constants import composite_participant_key
+from babblecast.constants import FRAME_BYTES, composite_participant_key
 from babblecast.config import UserSettings, get_settings, save_settings
 from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id
 
@@ -76,6 +77,9 @@ class ClientSession:
         self._user_disconnect = False
         self._audio_started = False
         self._last_level_sent = 0.0
+        self._jitter: dict[str, VoiceJitterBuffer] = {}
+        self._jitter_lock = threading.Lock()
+        self._codec_lock = threading.Lock()
 
     @property
     def link_id(self) -> str:
@@ -131,10 +135,11 @@ class ClientSession:
     def send_voice_pcm(self, pcm: bytes) -> None:
         if self._bridge_mic_muted or not self._room_id or not self._udp_sock:
             return
-        try:
+        if len(pcm) != FRAME_BYTES:
+            return
+        with self._codec_lock:
             opus = self._codec.encode(pcm)
-        except Exception:
-            logger.exception("Opus encode failed")
+        if not opus:
             return
         self._sequence += 1
         packet = VoicePacket(
@@ -190,13 +195,21 @@ class ClientSession:
             packet = VoicePacket.decode(data)
             if not packet or packet.sender_id == self._client_id:
                 continue
-            try:
-                pcm = self._codec.decode(packet.opus_payload)
-            except Exception:
-                continue
+            with self._jitter_lock:
+                jb = self._jitter.setdefault(packet.sender_id, VoiceJitterBuffer())
+            payloads = jb.push(packet.sequence, packet.opus_payload)
             speaker = self._bridge_speaker if self.is_bridge else self._speaker
-            if speaker:
-                speaker.push_pcm(self._participant_key(packet.sender_id), pcm)
+            if not speaker:
+                continue
+            key = self._participant_key(packet.sender_id)
+            for payload in payloads:
+                with self._codec_lock:
+                    if payload is None:
+                        pcm = self._codec.decode_plc()
+                    else:
+                        pcm = self._codec.decode(payload)
+                if len(pcm) == FRAME_BYTES:
+                    speaker.push_pcm(key, pcm)
 
     async def _send(self, message: str) -> None:
         if self._ws:
@@ -330,8 +343,8 @@ class ClientSession:
             self._settings.last_server_port = ws_port
             save_settings(self._settings)
         self._setup_audio()
-        self._start_udp()
         self._running = True
+        self._start_udp()
         self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
         self._thread.start()
 
@@ -347,6 +360,11 @@ class ClientSession:
             except OSError:
                 pass
             self._udp_sock = None
+        if self._udp_thread:
+            self._udp_thread.join(timeout=2)
+            self._udp_thread = None
+        with self._jitter_lock:
+            self._jitter.clear()
         if self._loop and self._ws:
             asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
         if self._thread:

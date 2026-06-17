@@ -9,7 +9,7 @@ import threading
 import numpy as np
 
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
-from babblecast.constants import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,8 @@ class AndroidSpeakerOutput:
         self._participant_muted.pop(client_id, None)
 
     def push_pcm(self, client_id: str, pcm: bytes) -> None:
+        if len(pcm) != FRAME_BYTES:
+            return
         if self._participant_muted.get(client_id, False):
             return
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0

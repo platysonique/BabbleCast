@@ -12,7 +12,7 @@ import sounddevice as sd
 
 from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
-from babblecast.constants import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class SpeakerOutput:
         self._participant_muted.pop(client_id, None)
 
     def push_pcm(self, client_id: str, pcm: bytes) -> None:
-        if self._stream is None:
+        if self._stream is None or len(pcm) != FRAME_BYTES:
             return
         if self._participant_muted.get(client_id, False):
             return
