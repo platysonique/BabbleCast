@@ -55,6 +55,9 @@ class ClientSession:
         self._speaker: SpeakerOutput | None = None
         self._host = ""
         self._ws_port = 8765
+        self._user_disconnect = False
+        self._audio_started = False
+        self._last_level_sent = 0.0
 
     @property
     def client_id(self) -> str:
@@ -106,11 +109,15 @@ class ClientSession:
             pass
 
     def _on_voice_level(self, level: float) -> None:
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(
-                self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)),
-                self._loop,
-            )
+        if not self._loop or not self._ws:
+            return
+        if abs(level - self._last_level_sent) < 0.04 and (level > 0.05) == (self._last_level_sent > 0.05):
+            return
+        self._last_level_sent = level
+        asyncio.run_coroutine_threadsafe(
+            self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)),
+            self._loop,
+        )
 
     def _start_udp(self) -> None:
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -150,10 +157,10 @@ class ClientSession:
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_udp_port = int(data.get("udp_port", 8766))
-            if self._loop:
-                await self._send(
-                    encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
-                )
+            await self._send(
+                encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
+            )
+            self._start_audio()
             if self._on_connected:
                 self._on_connected()
             return
@@ -176,6 +183,27 @@ class ClientSession:
             if self._on_error:
                 self._on_error(str(data.get("message", "Unknown error")))
             return
+
+    def _start_audio(self) -> None:
+        if self._audio_started:
+            return
+        try:
+            if self._mic:
+                self._mic.start()
+            if self._speaker:
+                self._speaker.start()
+            self._audio_started = True
+        except Exception as exc:
+            logger.exception("Failed to start audio devices")
+            if self._on_error:
+                self._on_error(f"Audio unavailable: {exc}")
+
+    def _stop_audio(self) -> None:
+        if self._mic:
+            self._mic.stop()
+        if self._speaker:
+            self._speaker.stop()
+        self._audio_started = False
 
     def _local_ip(self) -> str:
         try:
@@ -207,7 +235,7 @@ class ClientSession:
             self._loop.run_until_complete(self._run_ws())
         except Exception as exc:
             logger.exception("WebSocket session ended")
-            if self._on_disconnected:
+            if self._on_disconnected and not self._user_disconnect:
                 self._on_disconnected(str(exc))
         finally:
             self._running = False
@@ -219,6 +247,7 @@ class ClientSession:
     def connect(self, host: str, ws_port: int = 8765) -> None:
         if self._running:
             self.disconnect()
+        self._user_disconnect = False
         self._host = host
         self._ws_port = ws_port
         self._settings.last_server_host = host
@@ -226,18 +255,16 @@ class ClientSession:
         save_settings(self._settings)
         self._setup_audio()
         self._start_udp()
-        self._mic.start()
-        self._speaker.start()
         self._running = True
         self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
         self._thread.start()
 
     def disconnect(self) -> None:
+        if not self._running and not self._thread:
+            return
+        self._user_disconnect = True
         self._running = False
-        if self._mic:
-            self._mic.stop()
-        if self._speaker:
-            self._speaker.stop()
+        self._stop_audio()
         if self._udp_sock:
             try:
                 self._udp_sock.close()

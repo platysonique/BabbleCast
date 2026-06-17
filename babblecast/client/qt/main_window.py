@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -28,11 +28,23 @@ from PyQt6.QtWidgets import (
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
 from babblecast.client.qt.participant_widget import ParticipantWidget
-from babblecast.client.qt.server_runner import EmbeddedServer
 from babblecast.client.qt.styles import STYLESHEET
 from babblecast.client.session import ClientSession
 from babblecast.config import get_settings, save_settings
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
+from babblecast.server.embedded import EmbeddedServer
+
+
+class _UiBridge(QObject):
+    """Marshals background-thread session/discovery callbacks onto the Qt GUI thread."""
+
+    servers_found = pyqtSignal(list)
+    connected = pyqtSignal()
+    disconnected = pyqtSignal(str)
+    error = pyqtSignal(str)
+    presence = pyqtSignal(str, list)
+    chat = pyqtSignal(dict)
+    rooms = pyqtSignal(list)
 
 
 class MainWindow(QMainWindow):
@@ -44,16 +56,24 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
         self.setStyleSheet(STYLESHEET)
         self._settings = get_settings()
+        self._bridge = _UiBridge()
+        self._bridge.servers_found.connect(self._on_servers_discovered)
+        self._bridge.connected.connect(self._on_connected)
+        self._bridge.disconnected.connect(self._on_disconnected)
+        self._bridge.error.connect(self._on_error)
+        self._bridge.presence.connect(self._on_presence)
+        self._bridge.chat.connect(self._on_chat)
+        self._bridge.rooms.connect(self._on_rooms)
         self._session = ClientSession(
-            on_presence=self._on_presence,
-            on_chat=self._on_chat,
-            on_rooms=self._on_rooms,
-            on_connected=self._on_connected,
-            on_disconnected=self._on_disconnected,
-            on_error=self._on_error,
+            on_presence=lambda rid, p: self._bridge.presence.emit(rid, p),
+            on_chat=lambda d: self._bridge.chat.emit(d),
+            on_rooms=lambda r: self._bridge.rooms.emit(r),
+            on_connected=lambda: self._bridge.connected.emit(),
+            on_disconnected=lambda r: self._bridge.disconnected.emit(r),
+            on_error=lambda m: self._bridge.error.emit(m),
         )
         self._embedded = EmbeddedServer(server_name=socket.gethostname())
-        self._discovery = ServerDiscovery(on_update=self._on_servers_discovered)
+        self._discovery = ServerDiscovery(on_update=lambda s: self._bridge.servers_found.emit(s))
         self._participant_widgets: dict[str, ParticipantWidget] = {}
         self._self_muted = False
         self._ptt_held = False

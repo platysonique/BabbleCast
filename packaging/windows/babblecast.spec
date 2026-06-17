@@ -14,6 +14,7 @@ a = Analysis(
     hiddenimports=[
         "babblecast",
         "babblecast.client.qt.main_window",
+        "babblecast.server.embedded",
         "babblecast.server.hub",
         "opuslib",
         "noisereduce",

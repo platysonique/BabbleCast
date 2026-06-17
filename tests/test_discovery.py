@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from babblecast.client.qt.server_runner import EmbeddedServer
+from babblecast.server.embedded import EmbeddedServer
 from babblecast.discovery import ServerAdvertiser
 from babblecast.server.hub import BabbleCastHub
 

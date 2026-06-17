@@ -12,20 +12,21 @@ from __future__ import annotations
 
 import threading
 
+from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, StringProperty
 from kivymd.app import MDApp
-from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.button import MDRaisedButton
-from kivymd.uix.list import MDList, OneLineListItem, TwoLineListItem
-from kivymd.uix.screen import MDScreen
 from kivymd.uix.label import MDLabel
+from kivymd.uix.list import MDList, TwoLineListItem
+from kivymd.uix.screen import MDScreen
 from kivymd.uix.slider import MDSlider
 from kivymd.uix.textfield import MDTextField
 
 from babblecast.client.session import ClientSession
 from babblecast.config import get_settings, save_settings
 from babblecast.discovery import ServerDiscovery
+from babblecast.server.embedded import EmbeddedServer
 
 KV = """
 <BabbleMobileScreen>:
@@ -123,13 +124,16 @@ class BabbleMobileScreen(MDScreen):
         self.gate_db = self._settings.gate_threshold_db
         self.noise_pct = int(self._settings.noise_suppression * 100)
         self._session = ClientSession(
-            on_presence=self._on_presence,
-            on_chat=self._on_chat,
-            on_connected=lambda: setattr(self, "status_text", "Connected"),
-            on_disconnected=lambda r: setattr(self, "status_text", f"Offline — {r}"),
+            on_presence=lambda rid, p: Clock.schedule_once(lambda _dt: self._on_presence(rid, p)),
+            on_chat=lambda d: Clock.schedule_once(lambda _dt: self._on_chat(d)),
+            on_connected=lambda: Clock.schedule_once(lambda _dt: setattr(self, "status_text", "Connected")),
+            on_disconnected=lambda r: Clock.schedule_once(lambda _dt: setattr(self, "status_text", f"Offline — {r}")),
+            on_error=lambda m: Clock.schedule_once(lambda _dt: setattr(self, "status_text", f"Error: {m}")),
         )
-        self._discovery = ServerDiscovery(on_update=self._on_servers)
-        self._embedded = None
+        self._discovery = ServerDiscovery(
+            on_update=lambda s: Clock.schedule_once(lambda _dt, sv=s: self._apply_servers(sv))
+        )
+        self._embedded: EmbeddedServer | None = None
         self._selected_host = ("127.0.0.1", 8765)
 
     def on_enter(self, *args):
@@ -138,8 +142,10 @@ class BabbleMobileScreen(MDScreen):
     def on_leave(self, *args):
         self._discovery.stop()
         self._session.disconnect()
+        if self._embedded and self._embedded.running:
+            self._embedded.stop()
 
-    def _on_servers(self, servers):
+    def _apply_servers(self, servers) -> None:
         self.servers = [(s.host, s.ws_port, s.label) for s in servers]
         lst = self.ids.server_list
         lst.clear_widgets()
@@ -160,8 +166,6 @@ class BabbleMobileScreen(MDScreen):
         self._session.connect(host, port)
 
     def host_server(self):
-        from babblecast.client.qt.server_runner import EmbeddedServer
-
         if self._embedded and self._embedded.running:
             self._embedded.stop()
             self.status_text = "Server stopped"
