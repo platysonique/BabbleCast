@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from threading import Lock, Timer
 from typing import Any
 
 from babblecast.paths import app_config_dir
 
 _MAX_MESSAGES_PER_ROOM = 500
+_SAVE_DEBOUNCE_SEC = 0.5
 
 
 def room_chat_key(host: str, port: int, room_id: str) -> str:
@@ -50,6 +53,9 @@ class RoomChatStore:
 
     def __init__(self) -> None:
         self._histories: dict[str, RoomChatHistory] = {}
+        self._save_lock = Lock()
+        self._save_timer: Timer | None = None
+        self._dirty = False
         self.load()
 
     def load(self) -> None:
@@ -70,9 +76,8 @@ class RoomChatStore:
         except (json.JSONDecodeError, TypeError, ValueError):
             self._histories = {}
 
-    def save(self) -> None:
-        path = _store_path(create=True)
-        payload = {
+    def _payload(self) -> dict[str, Any]:
+        return {
             "rooms": {
                 key: {
                     "room_name": hist.room_name,
@@ -81,7 +86,39 @@ class RoomChatStore:
                 for key, hist in self._histories.items()
             }
         }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _atomic_write(self) -> None:
+        path = _store_path(create=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._payload(), indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _schedule_save(self) -> None:
+        with self._save_lock:
+            self._dirty = True
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+            timer = Timer(_SAVE_DEBOUNCE_SEC, self._flush_save)
+            timer.daemon = True
+            self._save_timer = timer
+            timer.start()
+
+    def _flush_save(self) -> None:
+        with self._save_lock:
+            if not self._dirty:
+                return
+            self._dirty = False
+            self._save_timer = None
+        self._atomic_write()
+
+    def save(self) -> None:
+        """Flush pending writes immediately (purge, shutdown)."""
+        with self._save_lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
+            self._dirty = False
+        self._atomic_write()
 
     def history(
         self,
@@ -122,7 +159,7 @@ class RoomChatStore:
         hist.messages.append(line)
         if len(hist.messages) > _MAX_MESSAGES_PER_ROOM:
             hist.messages = hist.messages[-_MAX_MESSAGES_PER_ROOM:]
-        self.save()
+        self._schedule_save()
         return line
 
     def lines(self, host: str, port: int, room_id: str) -> list[ChatLine]:

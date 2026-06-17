@@ -17,6 +17,8 @@ presplash.filename = %(source.dir)s/assets/splash.png
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,kivymd==1.2.0,pyjnius,android,numpy,zeroconf,websockets,libopus,opuslib,plyer,sqlite3,openssl
 p4a.local_recipes = p4a-recipes
 
+services = Voice:mobile/voice_service.py:foreground
+
 orientation = portrait
 fullscreen = 0
 

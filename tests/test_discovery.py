@@ -81,3 +81,30 @@ def test_discovery_handler_accepts_zeroconf_keyword() -> None:
         name="test._babblecast._tcp.local.",
         state_change=ServiceStateChange.Removed,
     )
+
+
+def test_discovery_removed_drops_server() -> None:
+    import time
+
+    from babblecast.discovery import DiscoveredServer, ServerDiscovery
+    from zeroconf import ServiceStateChange, Zeroconf
+
+    disc = ServerDiscovery()
+    service_name = "studio._babblecast._tcp.local."
+    disc._servers[service_name] = DiscoveredServer(
+        service_name=service_name,
+        name="Studio",
+        host="127.0.0.1",
+        ws_port=8765,
+        udp_port=8766,
+        properties={},
+        seen_at=time.time(),
+    )
+    assert len(disc.servers) == 1
+    disc._on_service(
+        zeroconf=Zeroconf(),
+        service_type="_babblecast._tcp.local.",
+        name=service_name,
+        state_change=ServiceStateChange.Removed,
+    )
+    assert disc.servers == []

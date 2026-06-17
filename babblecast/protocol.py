@@ -18,6 +18,17 @@ from babblecast.constants import (
 )
 
 
+class ErrorCode(str, Enum):
+    NAME_TAKEN = "name_taken"
+    ROOM_NOT_FOUND = "room_not_found"
+    LAST_ROOM = "last_room"
+    USER_NOT_FOUND = "user_not_found"
+    TAP_NOT_FOUND = "tap_not_found"
+    TAP_NOT_PARTICIPANT = "tap_not_participant"
+    TAP_NOT_OPEN = "tap_not_open"
+    GENERIC = "generic"
+
+
 class MsgType(str, Enum):
     HELLO = "hello"
     WELCOME = "welcome"
@@ -63,6 +74,19 @@ def decode_msg(raw: str | bytes) -> dict[str, Any]:
     if "type" not in data:
         raise ValueError("missing message type")
     return data
+
+
+def parse_error_code(data: dict[str, Any]) -> str | None:
+    code = data.get("error_code")
+    if code is None:
+        return None
+    return str(code)
+
+
+def is_name_taken_error(error_code: str | None, message: str = "") -> bool:
+    if error_code == ErrorCode.NAME_TAKEN.value:
+        return True
+    return "name already in use" in message.lower()
 
 
 def clamp_name(name: str) -> str:

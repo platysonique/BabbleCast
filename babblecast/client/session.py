@@ -17,7 +17,7 @@ from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.constants import FRAME_BYTES, composite_participant_key
 from babblecast.config import UserSettings, get_settings, save_settings
-from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id
+from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id, parse_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class ClientSession:
         on_room_deleted: Callable[[str], None] | None = None,
         on_connected: Callable[[], None] | None = None,
         on_disconnected: Callable[[str], None] | None = None,
-        on_error: Callable[[str], None] | None = None,
+        on_error: Callable[[str, str | None], None] | None = None,
         on_tap_received: Callable[[dict], None] | None = None,
         on_tap_chat: Callable[[dict], None] | None = None,
         on_tap_open: Callable[[str], None] | None = None,
@@ -80,6 +80,7 @@ class ClientSession:
         self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
+        self._welcomed = False
         self._last_level_sent = 0.0
         self._jitter: dict[str, VoiceJitterBuffer] = {}
         self._jitter_lock = threading.Lock()
@@ -222,6 +223,7 @@ class ClientSession:
     async def _handle(self, data: dict[str, Any]) -> None:
         mtype = data.get("type")
         if mtype == MsgType.WELCOME:
+            self._welcomed = True
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_name = str(data.get("server_name", ""))
@@ -273,8 +275,12 @@ class ClientSession:
                 self._on_tap_end(str(data.get("tap_id", "")))
             return
         if mtype == MsgType.ERROR:
+            message = str(data.get("message", "Unknown error"))
+            error_code = parse_error_code(data)
             if self._on_error:
-                self._on_error(str(data.get("message", "Unknown error")))
+                self._on_error(message, error_code)
+            if not self._welcomed and self._ws:
+                await self._ws.close(1008, message)
             return
 
     def _start_audio(self) -> None:
@@ -294,7 +300,7 @@ class ClientSession:
                 self._speaker.stop()
             self._audio_started = False
             if self._on_error:
-                self._on_error(f"Audio unavailable: {exc}")
+                self._on_error(f"Audio unavailable: {exc}", None)
 
     def _stop_audio(self) -> None:
         if self.is_bridge:
@@ -328,42 +334,8 @@ class ClientSession:
                     continue
                 await self._handle(msg)
 
-    def _thread_main(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._run_ws())
-        except Exception as exc:
-            logger.exception("WebSocket session ended")
-            if self._on_disconnected and not self._user_disconnect:
-                self._on_disconnected(str(exc))
-        finally:
-            self._running = False
-            self._ws = None
-            if self._loop:
-                self._loop.close()
-            self._loop = None
-
-    def connect(self, host: str, ws_port: int = 8765) -> None:
-        if self._running:
-            self.disconnect()
-        self._user_disconnect = False
-        self._host = host
-        self._ws_port = ws_port
-        if not self.is_bridge:
-            self._settings.last_server_host = host
-            self._settings.last_server_port = ws_port
-            save_settings(self._settings)
-        self._setup_audio()
-        self._running = True
-        self._start_udp()
-        self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
-        self._thread.start()
-
-    def disconnect(self) -> None:
-        if not self._running and not self._thread:
-            return
-        self._user_disconnect = True
+    def _shutdown_transport(self, *, close_ws: bool = True) -> None:
+        """Stop network/audio I/O without firing disconnect callbacks."""
         self._running = False
         self._stop_audio()
         if self._udp_sock:
@@ -377,12 +349,59 @@ class ClientSession:
             self._udp_thread = None
         with self._jitter_lock:
             self._jitter.clear()
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
+        if close_ws and self._loop and self._ws and threading.current_thread() is not self._thread:
+            try:
+                asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop).result(timeout=2)
+            except Exception:
+                pass
+        self._ws = None
+
+    def _thread_main(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        disconnect_reason = ""
+        try:
+            self._loop.run_until_complete(self._run_ws())
+        except Exception as exc:
+            if self._welcomed:
+                logger.exception("WebSocket session ended")
+            else:
+                logger.info("Connection closed before welcome: %s", exc)
+            disconnect_reason = str(exc)
+        finally:
+            self._shutdown_transport(close_ws=False)
+            if self._loop:
+                self._loop.close()
+            self._loop = None
+            if self._on_disconnected and not self._user_disconnect:
+                self._on_disconnected(disconnect_reason or "Connection closed")
+
+    def connect(self, host: str, ws_port: int = 8765) -> None:
+        if self._running:
+            self.disconnect()
+        self._user_disconnect = False
+        self._welcomed = False
+        self._host = host
+        self._ws_port = ws_port
+        if not self.is_bridge:
+            self._settings.last_server_host = host
+            self._settings.last_server_port = ws_port
+            save_settings(self._settings)
+        self._setup_audio()
+        self._running = True
+        self._start_udp()
+        self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
+        self._thread.start()
+
+    def disconnect(self, *, notify: bool = True) -> None:
+        if not self._running and not self._thread:
+            return
+        self._user_disconnect = True
+        self._shutdown_transport()
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
-        if self._on_disconnected and self._user_disconnect:
+        if notify and self._on_disconnected:
             self._on_disconnected("Disconnected")
 
     def set_muted(self, muted: bool) -> None:

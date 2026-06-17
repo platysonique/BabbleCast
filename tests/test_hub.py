@@ -8,7 +8,7 @@ import pytest
 import websockets
 
 from babblecast.protocol import MsgType, decode_msg, encode_msg
-from babblecast.server.hub import BabbleCastHub
+from babblecast.server.hub import BabbleCastHub, ClientState
 
 
 @pytest.mark.asyncio
@@ -161,6 +161,66 @@ async def test_cannot_delete_last_room() -> None:
                     err = msg
                     break
             assert err is not None
+            assert err.get("error_code") == "last_room"
             assert "last room" in err.get("message", "").lower()
     finally:
         await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_display_name_rejected() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18773, udp_port=18774, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18773") as ws_a:
+            await ws_a.send(encode_msg(MsgType.HELLO, name="Director"))
+            welcome = decode_msg(await asyncio.wait_for(ws_a.recv(), timeout=2))
+            assert welcome["type"] == MsgType.WELCOME.value
+
+            async with websockets.connect("ws://127.0.0.1:18773") as ws_b:
+                await ws_b.send(encode_msg(MsgType.HELLO, name="director"))
+                err = None
+                for _ in range(8):
+                    msg = decode_msg(await asyncio.wait_for(ws_b.recv(), timeout=2))
+                    if msg.get("type") == MsgType.ERROR.value:
+                        err = msg
+                        break
+                assert err is not None
+                assert err.get("error_code") == "name_taken"
+                assert "name already in use" in err.get("message", "").lower()
+    finally:
+        await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_display_name_released_after_disconnect() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18775, udp_port=18776, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18775") as ws_a:
+            await ws_a.send(encode_msg(MsgType.HELLO, name="Gaffer"))
+            decode_msg(await asyncio.wait_for(ws_a.recv(), timeout=2))
+
+        async with websockets.connect("ws://127.0.0.1:18775") as ws_b:
+            await ws_b.send(encode_msg(MsgType.HELLO, name="Gaffer"))
+            welcome = decode_msg(await asyncio.wait_for(ws_b.recv(), timeout=2))
+            assert welcome["type"] == MsgType.WELCOME.value
+    finally:
+        await hub.stop()
+
+
+def test_udp_source_must_match_registered_addr() -> None:
+    hub = BabbleCastHub(advertise=False)
+    client = ClientState(ws=None, client_id="c1", name="A")  # type: ignore[arg-type]
+    client.udp_addr = ("127.0.0.1", 5000)
+    assert hub._register_udp_source(client, ("127.0.0.1", 5000))
+    assert client.udp_source == ("127.0.0.1", 5000)
+    assert hub._register_udp_source(client, ("127.0.0.1", 5000))
+    assert not hub._register_udp_source(client, ("127.0.0.1", 5001))
+    assert not hub._register_udp_source(client, ("192.168.1.5", 5000))
+    client.udp_addr = ("10.0.0.2", 6000)
+    assert client.udp_addr == ("10.0.0.2", 6000)
+    fresh = ClientState(ws=None, client_id="c2", name="B")  # type: ignore[arg-type]
+    fresh.udp_addr = ("127.0.0.1", 7000)
+    assert not hub._register_udp_source(fresh, ("127.0.0.1", 7001))
+    assert hub._register_udp_source(fresh, ("192.168.1.9", 7000))

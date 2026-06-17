@@ -26,6 +26,7 @@ def test_room_chat_store_persists_messages(tmp_path, monkeypatch) -> None:
     store = RoomChatStore()
     store.append("127.0.0.1", 8765, "room-a", "Alice", "hello room")
     store.append("127.0.0.1", 8765, "room-a", "Bob", "hi back", room_name="General")
+    store.save()
 
     reloaded = RoomChatStore()
     lines = reloaded.lines("127.0.0.1", 8765, "room-a")
@@ -46,6 +47,21 @@ def test_room_chat_store_purge_removes_history(tmp_path, monkeypatch) -> None:
     store.append("127.0.0.1", 8765, "room-a", "Alice", "hello room")
     store.purge("127.0.0.1", 8765, "room-a")
     assert store.lines("127.0.0.1", 8765, "room-a") == []
+
+
+def test_room_chat_flush_writes_atomically(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "babblecast.room_chat.app_config_dir",
+        lambda create=False: tmp_path,
+    )
+    from babblecast.room_chat import RoomChatStore
+
+    store = RoomChatStore()
+    store.append("127.0.0.1", 8765, "room-a", "Alice", "hello room")
+    store.save()
+    path = tmp_path / "room_chat.json"
+    assert path.exists()
+    assert not (tmp_path / "room_chat.json.tmp").exists()
 
 
 def test_embedded_server_on_started_callback() -> None:

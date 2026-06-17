@@ -38,7 +38,14 @@ from babblecast.client.qt.tap_chat_dialog import TapChatDialog
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import composite_participant_key
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
-from babblecast.room_chat import get_room_chat_store
+from babblecast.client.room_controller import (
+    chat_lines,
+    purge_room_chat,
+    record_incoming_chat,
+    resolve_room,
+    should_disconnect_failed_connect,
+)
+from babblecast.protocol import is_name_taken_error
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import get_tap_store
 
@@ -53,7 +60,7 @@ class _UiSignals(QObject):
     rooms = pyqtSignal(str, list)
     joined = pyqtSignal(str, str, str)
     room_deleted = pyqtSignal(str, str)
-    error = pyqtSignal(str, str)
+    error = pyqtSignal(str, str, str)
     tap_received = pyqtSignal(str, dict)
     tap_chat = pyqtSignal(str, dict)
     tap_open = pyqtSignal(str, str)
@@ -97,7 +104,7 @@ class MainWindow(QMainWindow):
             on_rooms=lambda lid, r: self._ui.rooms.emit(lid, r),
             on_joined=lambda lid, rid, rn: self._ui.joined.emit(lid, rid, rn),
             on_room_deleted=lambda lid, rid: self._ui.room_deleted.emit(lid, rid),
-            on_error=lambda lid, m: self._ui.error.emit(lid, m),
+            on_error=lambda lid, m, ec=None: self._ui.error.emit(lid, m, ec or ""),
             on_tap_received=lambda lid, d: self._ui.tap_received.emit(lid, d),
             on_tap_chat=lambda lid, d: self._ui.tap_chat.emit(lid, d),
             on_tap_open=lambda lid, tid: self._ui.tap_open.emit(lid, tid),
@@ -481,10 +488,24 @@ class MainWindow(QMainWindow):
         if not self._bridge.links:
             self._status.setText(f"Offline — {reason}")
 
-    def _on_error(self, link_id: str, message: str) -> None:
+    def _on_error(self, link_id: str, message: str, error_code: str = "") -> None:
         link = self._bridge.get_link(link_id)
         label = link.label if link else link_id
-        QMessageBox.warning(self, "BabbleCast", f"{label}: {message}")
+        code = error_code or None
+        if is_name_taken_error(code, message):
+            QMessageBox.warning(
+                self,
+                "Name taken",
+                f"“{self._name_edit.text().strip()}” is already on {label}.\n\n"
+                "Pick another display name (e.g. Cam A, Director 2).",
+            )
+            self._name_edit.setFocus()
+            self._name_edit.selectAll()
+        else:
+            QMessageBox.warning(self, "BabbleCast", f"{label}: {message}")
+        if link and should_disconnect_failed_connect(code, message, connected=link.connected):
+            self._bridge.disconnect(link_id)
+            self._status.setText(message)
 
     def _set_active_link(self, link_id: str) -> None:
         self._active_link_id = link_id
@@ -506,7 +527,7 @@ class MainWindow(QMainWindow):
     def _on_room_deleted(self, link_id: str, room_id: str) -> None:
         link = self._bridge.get_link(link_id)
         if link:
-            get_room_chat_store().purge(link.host, link.port, room_id)
+            purge_room_chat(link.host, link.port, room_id)
         if self._room_by_link.get(link_id, ("", ""))[0] == room_id:
             self._room_by_link.pop(link_id, None)
         if link_id == self._active_link_id:
@@ -531,9 +552,12 @@ class MainWindow(QMainWindow):
             self._chat_log.clear()
             self._chat_log.append("<i>Waiting for room…</i>")
             return
-        room_id, room_name = self._room_by_link.get(lid, (session.room_id, "General"))
-        store = get_room_chat_store()
-        lines = store.lines(link.host, link.port, room_id)
+        room_id, room_name = resolve_room(
+            lid,
+            session.room_id,
+            self._room_by_link,
+        )
+        lines = chat_lines(link.host, link.port, room_id)
         self._chat_log.clear()
         label = link.label
         self._current_room_label.setText(f"In room: {room_name}")
@@ -550,23 +574,8 @@ class MainWindow(QMainWindow):
         if not link or not session:
             return
         room_id = str(data.get("room_id") or session.room_id or "")
-        if not room_id:
-            return
-        room_name = self._room_by_link.get(link_id, ("", "General"))[1]
-        name = str(data.get("name", "?"))
-        text = str(data.get("text", ""))
-        if not text.strip():
-            return
-        get_room_chat_store().append(
-            link.host,
-            link.port,
-            room_id,
-            name,
-            text,
-            client_id=str(data.get("client_id", "")),
-            ts=time.time(),
-            room_name=room_name,
-        )
+        room_name = resolve_room(link_id, session.room_id, self._room_by_link)[1]
+        record_incoming_chat(link.host, link.port, room_id, data, room_name=room_name)
 
     def _append_chat_line(self, name: str, text: str, *, ts: float | None = None) -> None:
         stamp = datetime.fromtimestamp(ts or time.time()).strftime("%H:%M")

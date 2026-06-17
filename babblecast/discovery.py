@@ -30,6 +30,7 @@ def _local_ips() -> list[str]:
 
 @dataclass(frozen=True)
 class DiscoveredServer:
+    service_name: str
     name: str
     host: str
     ws_port: int
@@ -157,14 +158,15 @@ class ServerDiscovery:
         if self._on_update:
             self._on_update(self.servers)
 
-    def _resolve(self, name: str, info: ServiceInfo) -> None:
+    def _resolve(self, service_name: str, info: ServiceInfo) -> None:
         host = socket.inet_ntoa(info.addresses[0]) if info.addresses else ""
         if not host:
             return
         props = {k.decode() if isinstance(k, bytes) else k: (v.decode() if isinstance(v, bytes) else str(v)) for k, v in info.properties.items()}
-        display = props.get("name", name.split(".")[0].replace("-", " "))
+        display = props.get("name", service_name.split(".")[0].replace("-", " "))
         udp_port = int(props.get("udp", DEFAULT_UDP_PORT))
         entry = DiscoveredServer(
+            service_name=service_name,
             name=display,
             host=host,
             ws_port=info.port or DEFAULT_WS_PORT,
@@ -173,7 +175,7 @@ class ServerDiscovery:
             seen_at=time.time(),
         )
         with self._lock:
-            self._servers[host] = entry
+            self._servers[service_name] = entry
         self._emit()
 
     def _on_service(
@@ -184,14 +186,19 @@ class ServerDiscovery:
         state_change: ServiceStateChange,
     ) -> None:
         if state_change is ServiceStateChange.Removed:
+            with self._lock:
+                removed = self._servers.pop(name, None)
+            if removed:
+                self._emit()
             return
         info = zeroconf.get_service_info(service_type, name, timeout=2000)
         if info:
             self._resolve(name, info)
 
     def _prune_loop(self) -> None:
+        """Fallback for servers that stop without a clean mDNS Removed event."""
         while not self._stop_event.is_set():
-            self._stop_event.wait(5)
+            self._stop_event.wait(30)
             if self._stop_event.is_set():
                 break
             cutoff = time.time() - DISCOVERY_STALE_SEC

@@ -46,7 +46,7 @@ class BridgeManager:
         on_rooms: Callable[[str, list[dict]], None] | None = None,
         on_joined: Callable[[str, str, str], None] | None = None,
         on_room_deleted: Callable[[str, str], None] | None = None,
-        on_error: Callable[[str, str], None] | None = None,
+        on_error: Callable[[str, str, str | None], None] | None = None,
         on_tap_received: Callable[[str, dict], None] | None = None,
         on_tap_chat: Callable[[str, dict], None] | None = None,
         on_tap_open: Callable[[str, str], None] | None = None,
@@ -175,7 +175,7 @@ class BridgeManager:
             on_room_deleted=lambda rid, lid=link_id: self._on_room_deleted and self._on_room_deleted(lid, rid),
             on_connected=_connected,
             on_disconnected=lambda reason, lid=link_id: self._handle_disconnect(lid, reason),
-            on_error=lambda m, lid=link_id: self._on_error and self._on_error(lid, m),
+            on_error=lambda m, ec, lid=link_id: self._on_error and self._on_error(lid, m, ec),
             on_tap_received=lambda d, lid=link_id: self._handle_tap_received(lid, d),
             on_tap_chat=lambda d, lid=link_id: self._on_tap_chat and self._on_tap_chat(lid, d),
             on_tap_open=lambda tid, lid=link_id: self._handle_tap_open(lid, tid),
@@ -185,15 +185,25 @@ class BridgeManager:
         self._sessions[link_id] = session
         if not self._ensure_audio():
             if self._on_error:
-                self._on_error(link_id, "Audio unavailable — connected for chat only; check speakers/mic")
+                self._on_error(
+                    link_id,
+                    "Audio unavailable — connected for chat only; check speakers/mic",
+                    None,
+                )
         session.update_settings(self._settings)
         session.connect(host, port)
         return link_id
 
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
         link = self._links.get(link_id)
+        was_connected = bool(link and link.connected)
         if link:
             link.connected = False
+        if not was_connected:
+            self._sessions.pop(link_id, None)
+            with self._lock:
+                self._links.pop(link_id, None)
+            self._stop_audio_if_idle()
         if self._on_link_disconnected:
             self._on_link_disconnected(link_id, reason)
 
