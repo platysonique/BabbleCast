@@ -60,6 +60,9 @@ class BabbleController:
                 lambda _dt, i=lid, data=d: self._on_tap_received(i, data)
             ),
             on_tap_chat=lambda lid, d: Clock.schedule_once(lambda _dt, data=d: self._on_tap_chat(data)),
+            on_local_mic_level=lambda lvl: Clock.schedule_once(
+                lambda _dt, level=lvl: self._on_local_mic_level(level)
+            ),
         )
         self._discovery = ServerDiscovery(
             on_update=lambda s: Clock.schedule_once(lambda _dt, sv=s: self._apply_servers(sv))
@@ -83,6 +86,8 @@ class BabbleController:
         self.chat_text = ""
         self.is_muted = False
         self.ptt_active = False
+        self._participant_by_composite: dict[str, dict] = {}
+        Clock.schedule_interval(self._tick_ui, 0.08)
 
     @property
     def settings(self):
@@ -123,7 +128,7 @@ class BabbleController:
         elif location_granted():
             screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
 
-    def connect_to(self, host: str, port: int, display_name: str) -> None:
+    def connect_to(self, host: str, port: int, display_name: str | None = None) -> None:
         host = host.strip()
         if not host:
             self.set_status("Enter a server IP or hostname")
@@ -135,7 +140,12 @@ class BabbleController:
             return
         self._pending_host = host
         self._pending_port = port
-        self.connect_selected(display_name, host=host, port=port)
+        if display_name:
+            self.connect_selected(display_name, host=host, port=port)
+            return
+        from mobile.credentials_dialog import prompt_connect
+
+        prompt_connect(host, port, f"{host}:{port}", lambda name: self.connect_selected(name, host=host, port=port))
 
     def connect_selected(
         self,
@@ -160,13 +170,20 @@ class BabbleController:
         self._bridge.update_settings(self._settings)
         self.set_status(f"Connecting {host}:{port}…")
         self._bridge.connect(host, port)
+        self._sync_input_monitoring()
         self.app.switch_tab("live")
 
     def host_server(self) -> None:
         if self._embedded and self._embedded.running:
             self.stop_hosting()
             return
-        self._prompt_host_server_name()
+        from mobile.credentials_dialog import prompt_host
+
+        prompt_host(lambda server, name: self._start_host_with_name(server, name))
+
+    def _start_host_with_name(self, server_name: str, display_name: str) -> None:
+        self._settings.display_name = display_name
+        self._start_host(server_name)
 
     def stop_hosting(self) -> None:
         if self._embedded and self._embedded.running:
@@ -180,39 +197,85 @@ class BabbleController:
         if hasattr(screen, "set_hosting"):
             screen.set_hosting(bool(self._embedded and self._embedded.running))
 
-    def _prompt_host_server_name(self) -> None:
-        from kivymd.uix.button import MDFlatButton, MDRaisedButton
-        from kivymd.uix.textfield import MDTextField
+    def set_master_volume(self, volume: float) -> None:
+        self._bridge.set_master_output_volume(volume)
 
-        default = self._settings.hosted_server_name or self._settings.display_name or "My Server"
-        field = MDTextField(hint_text="Server name", text=default, size_hint_y=None, height=dp(48))
+    def set_input_volume(self, volume: float) -> None:
+        self._bridge.set_input_volume(volume)
 
-        dialog_holder: list[MDDialog] = []
+    def set_noise_suppression(self, strength: float) -> None:
+        self._bridge.set_noise_suppression(strength)
 
-        def cancel(_dlg: MDDialog, *_args) -> None:
-            dialog_holder[0].dismiss()
+    def set_audio_panel_expanded(self, expanded: bool) -> None:
+        self._settings.ui_panel_expanded = expanded
+        save_settings(self._settings)
+        self._sync_input_monitoring()
 
-        def start(_dlg: MDDialog, *_args) -> None:
-            name = field.text.strip()
-            if not name:
-                self.set_status("Enter a server name to host")
-                return
-            dialog_holder[0].dismiss()
-            self._start_host(name)
+    def set_self_audio_expanded(self, expanded: bool) -> None:
+        self._settings.ui_self_audio_expanded = expanded
+        save_settings(self._settings)
+        self._sync_input_monitoring()
 
-        dialog = MDDialog(
-            title="Name your server",
-            text="This is how others will see you in Discover.",
-            type="custom",
-            content_cls=field,
-            buttons=[
-                MDFlatButton(text="Cancel", on_release=cancel),
-                MDRaisedButton(text="Start", on_release=start),
-            ],
+    def _sync_input_monitoring(self) -> None:
+        if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
+            self._bridge.ensure_input_monitoring()
+        else:
+            self._bridge.release_input_monitoring()
+
+    def on_live_enter(self) -> None:
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if panel:
+            panel.sync_from_settings()
+        self._sync_input_monitoring()
+
+    def _on_local_mic_level(self, level: float) -> None:
+        live = self.app.screen("live")
+        if live and getattr(live, "detail_panel", None):
+            live.detail_panel.set_self_mic_level(level)
+
+    def _tick_ui(self, _dt: float) -> bool:
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None) if live else None
+        if panel and panel._peer_key and panel._peer_open:
+            p = self._participant_by_composite.get(panel._peer_key)
+            if p:
+                panel.update_peer(p)
+        return True
+
+    def open_user_panel(self, link_id: str, participant: dict) -> None:
+        from babblecast.constants import composite_participant_key
+
+        cid = str(participant.get("client_id", ""))
+        composite = composite_participant_key(link_id, cid)
+        link = self._bridge.get_link(link_id)
+        my_id = link.client_id if link else ""
+        live = self.app.screen("live")
+        if not getattr(live, "detail_panel", None):
+            return
+        live.detail_panel.toggle_peer(
+            composite,
+            participant,
+            link_id=link_id,
+            server=link.label if link else link_id,
+            is_self=(cid == my_id),
         )
-        dialog_holder.append(dialog)
-        field.bind(on_text_validate=lambda *_: start(dialog))
-        dialog.open()
+
+    def open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
+        tap_id = self._tap_ids.get((link_id, peer_id))
+        if tap_id:
+            self._bridge.open_tap(link_id, tap_id)
+
+    def reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
+        from babblecast.taps import get_tap_store
+
+        for tap in get_tap_store().items:
+            if tap.save_id == save_id:
+                lines = [f"{m.get('name', '?')}: {m.get('text', '')}" for m in tap.messages]
+                summary = "\n".join(lines) or tap.reminder
+                if self._active_link_id == link_id and summary:
+                    self._bridge.send_chat(link_id, f"[Saved tap — {tap.reminder}]\n{summary}")
+                break
 
     def _start_host(self, name: str) -> None:
         clean = name.strip()[:MAX_NAME_LEN]
@@ -437,6 +500,11 @@ class BabbleController:
 
     def _on_presence(self, link_id: str, participants) -> None:
         self._presence[link_id] = participants
+        from babblecast.constants import composite_participant_key
+
+        for p in participants:
+            cid = str(p.get("client_id", ""))
+            self._participant_by_composite[composite_participant_key(link_id, cid)] = dict(p)
         live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
 
@@ -596,8 +664,6 @@ class BabbleController:
 
     def set_gate_db(self, value: float) -> None:
         self._bridge.set_gate_db(value)
-        self._settings.gate_threshold_db = value
-        save_settings(self._settings)
 
     def _send_tap(self, link_id: str, target_id: str) -> None:
         self._bridge.send_tap(link_id, target_id)

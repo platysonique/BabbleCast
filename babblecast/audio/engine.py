@@ -11,7 +11,7 @@ import numpy as np
 import sounddevice as sd
 
 from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
-from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
+from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
 from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class MicCapture:
         self._enabled = True
         self._ptt_active = False
         self._muted = False
+        self._input_volume = 1.0
         self._lock = threading.Lock()
 
     @property
@@ -64,6 +65,9 @@ class MicCapture:
             return self._ptt_active
         return True
 
+    def set_input_volume(self, value: float) -> None:
+        self._input_volume = max(0.0, min(2.0, value))
+
     def _callback(self, indata, frames, time_info, status) -> None:
         if status:
             logger.debug("Input stream status: %s", status)
@@ -75,15 +79,14 @@ class MicCapture:
         while len(self._buffer) >= FRAME_SAMPLES:
             frame = self._buffer[:FRAME_SAMPLES]
             self._buffer = self._buffer[FRAME_SAMPLES:]
-            if not self.should_transmit():
-                if self._on_level:
-                    self._on_level(0.0)
-                continue
-            processed = self._suppressor.process(frame)
+            gained = apply_gain(frame, self._input_volume)
+            processed = self._suppressor.process(gained)
             gated, level = self._gate.process(processed)
             if self._on_level:
-                self._on_level(level if level > 0.05 else 0.0)
-            if rms_db(gated) >= self._gate.threshold_db - 3:
+                self._on_level(level_db_to_meter(rms_db(gated)))
+            if not self.should_transmit():
+                continue
+            if self._gate.is_open():
                 self._on_frame(gated.tobytes(), level)
 
     def start(self) -> None:

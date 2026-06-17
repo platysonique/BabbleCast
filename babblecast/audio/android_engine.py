@@ -8,7 +8,7 @@ import threading
 
 import numpy as np
 
-from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
+from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
 from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ class AndroidMicCapture:
         self._on_level = on_level
         self._muted = False
         self._ptt_active = False
+        self._input_volume = 1.0
         self._running = False
         self._thread: threading.Thread | None = None
         self._record = None
@@ -60,6 +61,9 @@ class AndroidMicCapture:
             return self._ptt_active
         return True
 
+    def set_input_volume(self, value: float) -> None:
+        self._input_volume = max(0.0, min(2.0, value))
+
     def _loop(self) -> None:
         buf_size = FRAME_SAMPLES * 4
         data = bytearray(buf_size)
@@ -72,15 +76,14 @@ class AndroidMicCapture:
                 continue
             for i in range(0, len(samples) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
                 frame = samples[i : i + FRAME_SAMPLES]
-                if not self.should_transmit():
-                    if self._on_level:
-                        self._on_level(0.0)
-                    continue
-                processed = self._suppressor.process(frame.copy())
+                gained = apply_gain(frame, self._input_volume)
+                processed = self._suppressor.process(gained.copy())
                 gated, level = self._gate.process(processed)
                 if self._on_level:
-                    self._on_level(level if level > 0.05 else 0.0)
-                if rms_db(gated) >= self._gate.threshold_db - 3:
+                    self._on_level(level_db_to_meter(rms_db(gated)))
+                if not self.should_transmit():
+                    continue
+                if self._gate.is_open():
                     self._on_frame(gated.tobytes(), level)
 
     def start(self) -> None:

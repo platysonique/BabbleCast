@@ -26,6 +26,7 @@ class UserSettings:
     output_device: str | None = None
     gate_threshold_db: float = -40.0
     noise_suppression: float = 0.5
+    input_volume: float = 1.0
     output_volume: float = 1.0
     ptt_key: str = "space"
     last_server_host: str = "127.0.0.1"
@@ -34,6 +35,8 @@ class UserSettings:
     per_user_volumes: dict[str, float] = field(default_factory=dict)
     per_user_muted: dict[str, bool] = field(default_factory=dict)
     window_geometry: list[int] | None = None
+    ui_panel_expanded: bool = False
+    ui_self_audio_expanded: bool = False
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -48,6 +51,7 @@ class UserSettings:
                 output_device=raw.get("output_device"),
                 gate_threshold_db=float(raw.get("gate_threshold_db", -40.0)),
                 noise_suppression=float(raw.get("noise_suppression", 0.5)),
+                input_volume=float(raw.get("input_volume", 1.0)),
                 output_volume=float(raw.get("output_volume", 1.0)),
                 ptt_key=str(raw.get("ptt_key", "space")),
                 last_server_host=str(raw.get("last_server_host", "127.0.0.1")),
@@ -56,6 +60,8 @@ class UserSettings:
                 per_user_volumes=dict(raw.get("per_user_volumes", {})),
                 per_user_muted={k: bool(v) for k, v in raw.get("per_user_muted", {}).items()},
                 window_geometry=raw.get("window_geometry"),
+                ui_panel_expanded=bool(raw.get("ui_panel_expanded", False)),
+                ui_self_audio_expanded=bool(raw.get("ui_self_audio_expanded", False)),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

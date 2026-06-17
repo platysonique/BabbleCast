@@ -51,6 +51,7 @@ class BridgeManager:
         on_tap_chat: Callable[[str, dict], None] | None = None,
         on_tap_open: Callable[[str, str], None] | None = None,
         on_tap_end: Callable[[str, str], None] | None = None,
+        on_local_mic_level: Callable[[float], None] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._on_link_connected = on_link_connected
@@ -65,6 +66,8 @@ class BridgeManager:
         self._on_tap_chat = on_tap_chat
         self._on_tap_open = on_tap_open
         self._on_tap_end = on_tap_end
+        self._on_local_mic_level = on_local_mic_level
+        self._local_mic_level = 0.0
         self._links: dict[str, ServerLinkState] = {}
         self._sessions: dict[str, ClientSession] = {}
         self._lock = threading.Lock()
@@ -75,6 +78,7 @@ class BridgeManager:
         self._audio_started = False
         self._global_muted = False
         self._global_ptt = False
+        self._monitoring_requested = False
 
     @property
     def links(self) -> list[ServerLinkState]:
@@ -108,6 +112,7 @@ class BridgeManager:
             self._speaker.set_participant_muted(uid, muted)
         try:
             self._speaker.start()
+            self._mic.set_input_volume(self._settings.input_volume)
             self._mic.start()
         except Exception as exc:
             logger.exception("Bridge audio startup failed")
@@ -126,9 +131,19 @@ class BridgeManager:
         self._audio_started = False
 
     def _stop_audio_if_idle(self) -> None:
-        if self._sessions:
+        if self._sessions or self._monitoring_requested:
             return
         self._teardown_audio()
+
+    def ensure_input_monitoring(self) -> bool:
+        """Open shared mic/speaker so local meters work (even when not in a room)."""
+        self._monitoring_requested = True
+        return self._ensure_audio()
+
+    def release_input_monitoring(self) -> None:
+        self._monitoring_requested = False
+        if not self._sessions:
+            self._teardown_audio()
 
     def _on_mic_frame(self, pcm: bytes, _level: float) -> None:
         for link_id, session in list(self._sessions.items()):
@@ -142,6 +157,9 @@ class BridgeManager:
                 session.send_voice_pcm(bytes(pcm))
 
     def _on_mic_level(self, level: float) -> None:
+        self._local_mic_level = level
+        if self._on_local_mic_level:
+            self._on_local_mic_level(level)
         for link_id, session in list(self._sessions.items()):
             link = self._links.get(link_id)
             if link and not link.mic_muted and session.connected:
@@ -272,6 +290,12 @@ class BridgeManager:
         self._settings.noise_suppression = value
         save_settings(self._settings)
 
+    def set_input_volume(self, volume: float) -> None:
+        self._settings.input_volume = max(0.0, min(2.0, volume))
+        save_settings(self._settings)
+        if self._mic:
+            self._mic.set_input_volume(self._settings.input_volume)
+
     def set_input_device(self, device_key: str | None) -> None:
         self._settings.input_device = device_key
         save_settings(self._settings)
@@ -283,6 +307,16 @@ class BridgeManager:
         save_settings(self._settings)
         if self._speaker:
             self._speaker.set_device(device_key)
+
+    def set_master_output_volume(self, volume: float) -> None:
+        self._settings.output_volume = max(0.0, min(2.0, volume))
+        save_settings(self._settings)
+        if self._speaker:
+            self._speaker.set_master_volume(self._settings.output_volume)
+
+    @property
+    def local_mic_level(self) -> float:
+        return self._local_mic_level
 
     def set_participant_volume(self, composite_key: str, volume: float) -> None:
         self._settings.per_user_volumes[composite_key] = volume

@@ -128,6 +128,7 @@ class ClientSession:
             on_frame=self._on_audio_frame,
             on_level=self._on_voice_level,
         )
+        self._mic.set_input_volume(self._settings.input_volume)
         self._speaker = create_speaker(
             device_key=self._settings.output_device,
             master_volume=self._settings.output_volume,
@@ -136,6 +137,7 @@ class ClientSession:
             self._speaker.set_participant_volume(uid, vol)
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
+        self._mic.set_input_volume(self._settings.input_volume)
 
     def send_voice_pcm(self, pcm: bytes) -> None:
         if self._bridge_mic_muted or not self._room_id or not self._udp_sock:
@@ -423,6 +425,12 @@ class ClientSession:
         self._suppressor.set_strength(value)
         self._settings.noise_suppression = value
         save_settings(self._settings)
+
+    def set_input_volume(self, volume: float) -> None:
+        self._settings.input_volume = max(0.0, min(2.0, volume))
+        save_settings(self._settings)
+        if self._mic:
+            self._mic.set_input_volume(self._settings.input_volume)
 
     def set_input_device(self, device_key: str | None) -> None:
         self._settings.input_device = device_key
