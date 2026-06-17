@@ -441,6 +441,9 @@ class LiveScreen(MDScreen):
         return list(self._link_items.keys())
 
     def add_connected_link(self, link_id: str, link) -> None:
+        if link_id in self._link_items:
+            self.refresh_link_row(link_id, link)
+            return
         from kivymd.uix.button import MDIconButton
 
         row = MDBoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
@@ -452,6 +455,7 @@ class LiveScreen(MDScreen):
             ripple_behavior=True,
         )
         from kivymd.uix.label import MDLabel
+        from mobile.theme import ACCENT, SURFACE, TEXT
 
         card.add_widget(MDLabel(text=link.label, theme_text_color="Custom", text_color=TEXT))
         card.bind(on_release=lambda *_: self._set_active(link_id))
@@ -474,13 +478,26 @@ class LiveScreen(MDScreen):
         row.add_widget(listen)
         row.add_widget(mic)
         row.add_widget(disc)
-        self._link_items[link_id] = row
+        self._link_items[link_id] = {"row": row, "card": card, "listen": listen, "mic": mic}
         self._connected_box.add_widget(row)
 
+    def refresh_link_row(self, link_id: str, link) -> None:
+        item = self._link_items.get(link_id)
+        if not item or not link:
+            return
+        item["listen"].icon = "volume-off" if link.listen_muted else "volume-high"
+        item["mic"].icon = "microphone-off" if link.mic_muted else "microphone"
+
+    def set_active_link(self, link_id: str) -> None:
+        from mobile.theme import ACCENT, SURFACE
+
+        for lid, item in self._link_items.items():
+            item["card"].md_bg_color = ACCENT if lid == link_id else SURFACE
+
     def remove_connected_link(self, link_id: str) -> None:
-        row = self._link_items.pop(link_id, None)
-        if row:
-            self._connected_box.remove_widget(row)
+        item = self._link_items.pop(link_id, None)
+        if item:
+            self._connected_box.remove_widget(item["row"])
 
     def _set_active(self, link_id: str) -> None:
         app = MDApp.get_running_app()

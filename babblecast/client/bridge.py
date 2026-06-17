@@ -261,14 +261,11 @@ class BridgeManager:
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
         link = self._links.get(link_id)
         was_connected = bool(link and link.connected)
-        if link:
-            link.connected = False
-        if not was_connected:
-            self._sessions.pop(link_id, None)
-            with self._lock:
-                self._links.pop(link_id, None)
-            self._stop_audio_if_idle()
-        if self._on_link_disconnected:
+        self._sessions.pop(link_id, None)
+        with self._lock:
+            self._links.pop(link_id, None)
+        self._stop_audio_if_idle()
+        if was_connected and self._on_link_disconnected:
             self._on_link_disconnected(link_id, reason)
 
     def _handle_tap_received(self, link_id: str, data: dict[str, Any]) -> None:
@@ -288,9 +285,11 @@ class BridgeManager:
             self._on_tap_end(link_id, tap_id)
 
     def disconnect(self, link_id: str) -> None:
-        session = self._sessions.pop(link_id, None)
+        session = self._sessions.get(link_id)
         if session:
             session.disconnect()
+            return
+        self._sessions.pop(link_id, None)
         with self._lock:
             self._links.pop(link_id, None)
         self._stop_audio_if_idle()

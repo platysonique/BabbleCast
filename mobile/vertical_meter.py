@@ -32,8 +32,13 @@ class VerticalMeter(Widget):
         self._level = 0.0
         self._peak = 0.0
         self._clip = False
-        Clock.schedule_interval(self._decay_peak, 0.05)
+        self._decay_ev = Clock.schedule_interval(self._decay_peak, 0.05)
         self.bind(pos=self._redraw, size=self._redraw)
+
+    def stop(self) -> None:
+        if getattr(self, "_decay_ev", None) is not None:
+            Clock.unschedule(self._decay_ev)
+            self._decay_ev = None
 
     def set_level(self, level: float) -> None:
         level = max(0.0, min(1.0, float(level)))

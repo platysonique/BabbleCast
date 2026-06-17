@@ -61,6 +61,9 @@ class BabbleController:
                 lambda _dt, i=lid, data=d: self._on_tap_received(i, data)
             ),
             on_tap_chat=lambda lid, d: Clock.schedule_once(lambda _dt, data=d: self._on_tap_chat(data)),
+            on_tap_end=lambda lid, tid: Clock.schedule_once(
+                lambda _dt, i=lid, tap_id=tid: self._on_tap_end(i, tap_id)
+            ),
             on_local_mic_level=lambda lvl: Clock.schedule_once(
                 lambda _dt, level=lvl: self._on_local_mic_level(level)
             ),
@@ -83,19 +86,24 @@ class BabbleController:
         self._room_by_link: dict[str, tuple[str, str]] = {}
         self._pending_embedded_connect = False
         self._own_server_password = ""
+        self._closing = False
         self.current_room_text = "In room: —"
         self.status_text = "Offline — connect to one or more servers"
         self.chat_text = ""
         self.is_muted = False
         self.ptt_active = False
         self._participant_by_composite: dict[str, dict] = {}
-        self._tick_ev = Clock.schedule_interval(self._tick_ui, 0.08)
+
+    def _alive(self) -> bool:
+        return not self._closing and not self._bridge.shutting_down
 
     @property
     def settings(self):
         return self._settings
 
     def set_status(self, text: str) -> None:
+        if not self._alive():
+            return
         self.status_text = text
         live = self.app.screen("live")
         if hasattr(live, "status_text"):
@@ -115,24 +123,41 @@ class BabbleController:
             )
 
     def stop_all(self) -> None:
-        if self._tick_ev is not None:
-            Clock.unschedule(self._tick_ev)
-            self._tick_ev = None
+        self._closing = True
+        if self._tap_dialog:
+            self._tap_dialog.dismiss()
+            self._tap_dialog = None
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if panel:
+            panel.close_peer()
+            for meter in (getattr(panel, "_self_meter", None), getattr(panel, "_peer_meter", None)):
+                if meter and hasattr(meter, "stop"):
+                    meter.stop()
+        self._bridge.shutdown()
         self._discovery.stop()
         release_multicast_lock()
         if self._embedded and self._embedded.running:
             self._embedded.stop()
             self._embedded = None
-        self._bridge.shutdown()
         stop_voice_foreground()
 
     def _apply_servers(self, servers) -> None:
+        if not self._alive():
+            return
         screen = self.app.screen("connect")
         screen.update_servers(servers)
         if servers:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
+
+    def _password_required_for(self, host: str, port: int) -> bool:
+        host = host.strip()
+        for server in self._discovery.servers:
+            if server.host == host and server.ws_port == port:
+                return server.password_required
+        return False
 
     def connect_to(
         self,
@@ -166,6 +191,8 @@ class BabbleController:
             if name:
                 self.connect_selected(name, host=host, port=port, password=password)
                 return
+        if not password_required:
+            password_required = self._password_required_for(host, port)
         from mobile.credentials_dialog import prompt_connect
 
         prompt_connect(
@@ -239,6 +266,11 @@ class BabbleController:
 
     def stop_hosting(self) -> None:
         if self._embedded and self._embedded.running:
+            host = self._embedded.host
+            port = self._embedded.ws_port
+            for link in list(self._bridge.links):
+                if link.host == host and link.port == port and link.connected:
+                    self._bridge.disconnect(link.link_id)
             self._embedded.stop()
             self._embedded = None
             self._own_server_password = ""
@@ -283,20 +315,11 @@ class BabbleController:
         self._sync_input_monitoring()
 
     def _on_local_mic_level(self, level: float) -> None:
+        if not self._alive():
+            return
         live = self.app.screen("live")
         if live and getattr(live, "detail_panel", None):
             live.detail_panel.set_self_mic_level(level)
-
-    def _tick_ui(self, _dt: float) -> bool:
-        if self._bridge.shutting_down:
-            return False
-        live = self.app.screen("live")
-        panel = getattr(live, "detail_panel", None) if live else None
-        if panel and panel._peer_key and panel._peer_open:
-            p = self._participant_by_composite.get(panel._peer_key)
-            if p:
-                panel.update_peer(p)
-        return True
 
     def open_user_panel(self, link_id: str, participant: dict) -> None:
         from babblecast.constants import composite_participant_key
@@ -318,8 +341,14 @@ class BabbleController:
 
     def open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
         tap_id = self._tap_ids.get((link_id, peer_id))
-        if tap_id:
-            self._bridge.open_tap(link_id, tap_id)
+        if not tap_id:
+            return
+        from babblecast.constants import composite_participant_key
+
+        composite = composite_participant_key(link_id, peer_id)
+        p = self._participant_by_composite.get(composite, {})
+        peer_name = str(p.get("name", peer_id))
+        self._open_tap_dialog(link_id, tap_id, peer_id, peer_name)
 
     def reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
         from babblecast.taps import get_tap_store
@@ -408,15 +437,34 @@ class BabbleController:
             self.connect_to(self._embedded.host, self._embedded.ws_port, screen.display_name)
 
     def _on_connect_error(self, link_id: str, message: str, error_code: str | None = None) -> None:
+        if not self._alive():
+            return
         link = self._bridge.get_link(link_id)
         label = link.label if link else link_id
+        host = link.host if link else self._pending_host or ""
+        port = link.port if link else self._pending_port or 8765
         if is_name_taken_error(error_code, message):
             self.set_status(f"Name taken on {label} — pick another display name")
-            screen = self.app.screen("connect")
-            if hasattr(screen, "_name_field"):
-                screen._name_field.focus = True
+            from mobile.credentials_dialog import prompt_connect
+
+            prompt_connect(
+                host,
+                port,
+                label,
+                lambda name, pwd: self.connect_selected(name, host=host, port=port, password=pwd),
+                password_required=self._password_required_for(host, port),
+            )
         elif is_password_error(error_code, message):
-            self.set_status(f"{label}: {message} — reconnect with the correct password")
+            self.set_status(f"{label}: {message}")
+            from mobile.credentials_dialog import prompt_connect
+
+            prompt_connect(
+                host,
+                port,
+                label,
+                lambda name, pwd: self.connect_selected(name, host=host, port=port, password=pwd),
+                password_required=True,
+            )
         else:
             self.set_status(f"{label}: {message}")
         if link and should_disconnect_failed_connect(error_code, message, connected=link.connected):
@@ -429,6 +477,8 @@ class BabbleController:
             stop_voice_foreground()
 
     def _on_link_connected(self, link_id: str) -> None:
+        if not self._alive():
+            return
         link = self._bridge.get_link(link_id)
         if not link:
             return
@@ -437,6 +487,7 @@ class BabbleController:
         self._bridge.request_rooms(link_id)
         live = self.app.screen("live")
         live.add_connected_link(link_id, link)
+        live.set_active_link(link_id)
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
         rooms = self._rooms.get(link_id, [])
@@ -446,7 +497,12 @@ class BabbleController:
         self._sync_voice_foreground()
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
+        if not self._alive():
+            return
         live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if panel and panel._peer_key and panel._peer_key.startswith(f"{link_id}:"):
+            panel.close_peer()
         live.remove_connected_link(link_id)
         self._presence.pop(link_id, None)
         self._rooms.pop(link_id, None)
@@ -454,8 +510,11 @@ class BabbleController:
             remaining = live.connected_link_ids()
             self._active_link_id = remaining[0] if remaining else None
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
-        if not self._bridge.links:
+        n = sum(1 for l in self._bridge.links if l.connected)
+        if n == 0:
             self.set_status(f"Offline — {reason}")
+        else:
+            self.set_status(f"{n} server(s) connected")
         self._sync_voice_foreground()
 
     def set_active_link(self, link_id: str) -> None:
@@ -464,6 +523,7 @@ class BabbleController:
         if link:
             self.set_status(f"Active: {link.label}")
         live = self.app.screen("live")
+        live.set_active_link(link_id)
         rooms = self._rooms.get(link_id, [])
         live.update_rooms(rooms, True, self._current_room_id(link_id))
         self._reload_chat(link_id)
@@ -533,11 +593,15 @@ class BabbleController:
         link = self._bridge.get_link(link_id)
         if link:
             self._bridge.set_listen_muted(link_id, not link.listen_muted)
+            live = self.app.screen("live")
+            live.refresh_link_row(link_id, self._bridge.get_link(link_id))
 
     def toggle_mic(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
         if link:
             self._bridge.set_mic_muted(link_id, not link.mic_muted)
+            live = self.app.screen("live")
+            live.refresh_link_row(link_id, self._bridge.get_link(link_id))
 
     def disconnect_link(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -584,6 +648,8 @@ class BabbleController:
         self._bridge.send_chat(self._active_link_id, text.strip())
 
     def _on_presence(self, link_id: str, participants) -> None:
+        if not self._alive():
+            return
         self._presence[link_id] = participants
         from babblecast.constants import composite_participant_key
 
@@ -592,6 +658,11 @@ class BabbleController:
             self._participant_by_composite[composite_participant_key(link_id, cid)] = dict(p)
         live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
+        panel = getattr(live, "detail_panel", None)
+        if panel and panel._peer_key and panel._peer_open:
+            p = self._participant_by_composite.get(panel._peer_key)
+            if p:
+                panel.update_peer(p)
 
     def _on_rooms(self, link_id: str, rooms: list) -> None:
         self._rooms[link_id] = rooms
@@ -835,9 +906,19 @@ class BabbleController:
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
 
     def _on_tap_chat(self, data: dict) -> None:
+        if not self._alive():
+            return
         if self._tap_dialog and hasattr(self, "_tap_log"):
             line = f"{data.get('name', '?')}: {data.get('text', '')}\n"
             self._tap_messages.append({"name": data.get("name"), "text": data.get("text")})
             self._tap_log.text += line
+
+    def _on_tap_end(self, link_id: str, tap_id: str) -> None:
+        if not self._alive():
+            return
+        if self._tap_dialog and self._tap_id == tap_id and self._tap_link_id == link_id:
+            self._tap_dialog.dismiss()
+            self._tap_dialog = None
+            self._tap_messages.clear()
 
 
