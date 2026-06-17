@@ -292,6 +292,66 @@ class BabbleController:
         self._bridge.create_room(self._active_link_id, name.strip())
         self.set_status(f"Creating room “{name.strip()}”…")
 
+    def show_person_details(self, link_id: str, participant: dict) -> None:
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+        from kivymd.uix.dialog import MDDialog
+        from kivymd.uix.label import MDLabel
+
+        cid = str(participant.get("client_id", ""))
+        name = str(participant.get("name", "?"))
+        link = self._bridge.get_link(link_id)
+        server = link.label if link else link_id
+        my_id = link.client_id if link else ""
+        is_self = cid == my_id
+        pending = link.pending_taps if link else set()
+        has_tap = cid in pending or bool(self._tap_ids.get((link_id, cid)))
+
+        detail_text = (
+            f"Server: {server}\n"
+            f"Muted: {'Yes' if participant.get('muted') else 'No'}\n"
+            f"PTT active: {'Yes' if participant.get('ptt_active') else 'No'}\n"
+            f"Speaking: {'Yes' if participant.get('speaking') else 'No'}\n"
+            f"Voice level: {float(participant.get('voice_level', 0)):.0%}\n"
+            f"Your volume for them: {int(float(participant.get('volume', 1)) * 100)}%"
+        )
+        body = MDLabel(
+            text=detail_text,
+            theme_text_color="Custom",
+            text_color=TEXT,
+            size_hint_y=None,
+        )
+        body.bind(texture_size=lambda _l, s: setattr(body, "height", s[1]))
+
+        dialog_holder: list[MDDialog] = []
+
+        def close(_dlg: MDDialog, *_args) -> None:
+            dialog_holder[0].dismiss()
+
+        buttons = [MDFlatButton(text="Close", on_release=close)]
+        if not is_self:
+            buttons.insert(
+                0,
+                MDRaisedButton(
+                    text="Tap",
+                    on_release=lambda *_: (dialog_holder[0].dismiss(), self._send_tap(link_id, cid)),
+                ),
+            )
+            if has_tap:
+                buttons.insert(
+                    0,
+                    MDRaisedButton(
+                        text="Tap chat",
+                        on_release=lambda *_: (
+                            dialog_holder[0].dismiss(),
+                            self._open_tap_chat(link_id, cid, name),
+                        ),
+                    ),
+                )
+
+        dialog = MDDialog(title=f"{name}{' (you)' if is_self else ''}", type="custom", content_cls=body, buttons=buttons)
+        dialog_holder.append(dialog)
+        dialog.open()
+
     def _on_chat(self, link_id: str, data: dict) -> None:
         if link_id != self._active_link_id:
             return
@@ -569,6 +629,15 @@ class LiveScreen(MDScreen):
         conn_scroll.add_widget(self._connected_box)
 
         rooms_label = MDLabel(text="Rooms (active server)", font_style="H6", theme_text_color="Custom", text_color=TEXT)
+        room_create = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        self._new_room_field = MDTextField(
+            hint_text="New room name",
+            size_hint_x=0.7,
+            on_text_validate=lambda *_: self._create_room(),
+        )
+        create_room_btn = MDRaisedButton(text="Create room", size_hint_x=0.3, on_release=lambda *_: self._create_room())
+        room_create.add_widget(self._new_room_field)
+        room_create.add_widget(create_room_btn)
         self._rooms_box = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
         self._rooms_box.bind(minimum_height=self._rooms_box.setter("height"))
         rooms_scroll = ScrollView(size_hint_y=None, height=dp(80))
@@ -605,6 +674,7 @@ class LiveScreen(MDScreen):
             conn_label,
             conn_scroll,
             rooms_label,
+            room_create,
             rooms_scroll,
             people_label,
             people_scroll,
@@ -633,6 +703,14 @@ class LiveScreen(MDScreen):
         app.controller.send_chat(self._chat_input.text)
         self._chat_input.text = ""
 
+    def _create_room(self) -> None:
+        app = MDApp.get_running_app()
+        assert isinstance(app, BabbleCastMobileApp)
+        name = self._new_room_field.text.strip()
+        if name:
+            app.controller.create_room(name)
+            self._new_room_field.text = ""
+
     def update_rooms(self, rooms: list, is_active: bool) -> None:
         from kivymd.uix.label import MDLabel
 
@@ -652,9 +730,10 @@ class LiveScreen(MDScreen):
             return
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
-        for room in rooms:
-            rid = str(room.get("room_id", ""))
-            name = str(room.get("name", "Room"))
+        for r in rooms:
+            rid = str(r.get("room_id", ""))
+            name = str(r.get("name", "Room"))
+            count = int(r.get("member_count", 0))
             row = MDCard(
                 padding=dp(8),
                 size_hint_y=None,
@@ -662,7 +741,13 @@ class LiveScreen(MDScreen):
                 md_bg_color=SURFACE,
                 ripple_behavior=True,
             )
-            row.add_widget(MDLabel(text=name, theme_text_color="Custom", text_color=TEXT))
+            row.add_widget(
+                MDLabel(
+                    text=f"{name} ({count})",
+                    theme_text_color="Custom",
+                    text_color=TEXT,
+                )
+            )
             row.bind(on_release=lambda _w, r=rid: app.controller.join_room(r))
             self._rooms_box.add_widget(row)
 
@@ -737,38 +822,57 @@ class LiveScreen(MDScreen):
         from kivymd.uix.label import MDLabel
 
         self._people_box.clear_widgets()
+        if not active_link_id:
+            self._people_box.add_widget(
+                MDLabel(
+                    text="Connect to a server to see people in your room",
+                    theme_text_color="Custom",
+                    text_color=MUTED,
+                    size_hint_y=None,
+                    height=dp(40),
+                )
+            )
+            return
+
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
-        for lid, participants in presence.items():
-            link = bridge.get_link(lid)
-            label = link.label if link else lid
-            pending = link.pending_taps if link else set()
-            my_id = link.client_id if link else ""
-            for p in participants:
-                cid = str(p.get("client_id", ""))
-                name = str(p.get("name", "?"))
-                tap_mark = " 👆" if cid in pending else ""
-                speak = " 🔊" if p.get("speaking") else ""
-                row = MDBoxLayout(size_hint_y=None, height=dp(40))
-                text = f"{name}{tap_mark}{speak} · {label}"
-                if cid == my_id:
-                    text = f"{name} (you) · {label}{speak}"
-                row.add_widget(MDLabel(text=text, theme_text_color="Custom", text_color=TEXT))
-                if cid != my_id:
-                    tap_btn = MDIconButton(
-                        icon="gesture-tap",
-                        on_release=lambda *_a, ll=lid, pid=cid: app.controller._send_tap(ll, pid),
-                    )
-                    row.add_widget(tap_btn)
-                    if cid in pending or tap_ids.get((lid, cid)):
-                        chat_btn = MDIconButton(
-                            icon="message-text",
-                            on_release=lambda *_a, ll=lid, pid=cid, n=name: app.controller._open_tap_chat(
-                                ll, pid, n
-                            ),
-                        )
-                        row.add_widget(chat_btn)
-                self._people_box.add_widget(row)
+        link = bridge.get_link(active_link_id)
+        my_id = link.client_id if link else ""
+        participants = presence.get(active_link_id, [])
+
+        if not participants:
+            self._people_box.add_widget(
+                MDLabel(
+                    text="Nobody else in this room yet",
+                    theme_text_color="Custom",
+                    text_color=MUTED,
+                    size_hint_y=None,
+                    height=dp(40),
+                )
+            )
+            return
+
+        for p in participants:
+            cid = str(p.get("client_id", ""))
+            name = str(p.get("name", "?"))
+            if cid == my_id:
+                name = f"{name} (you)"
+            row = MDBoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+            name_label = MDLabel(
+                text=name,
+                theme_text_color="Custom",
+                text_color=TEXT,
+                size_hint_x=0.85,
+            )
+            row.add_widget(name_label)
+            more_btn = MDIconButton(
+                icon="dots-vertical",
+                on_release=lambda *_a, ll=active_link_id, part=dict(p): app.controller.show_person_details(
+                    ll, part
+                ),
+            )
+            row.add_widget(more_btn)
+            self._people_box.add_widget(row)
 
 
 class SettingsScreen(MDScreen):
