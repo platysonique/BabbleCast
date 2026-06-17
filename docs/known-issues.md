@@ -133,3 +133,53 @@ Aborted (core dumped)
 - In BabbleCast, pick a different **output device** in settings before connect.
 - Retry after `systemctl --user restart pipewire wireplumber` (or log out/in).
 
+---
+
+## Linux: immediate Opus `silk/resampler` abort on launch
+
+**Status:** Open  
+**Reported:** 2026-06-17 (Pop!_OS 24.04, Python 3.12, post–PortAudio-fix builds)  
+**Affects:** Client launch (`bbc`) — process aborts before or without a useful Python traceback
+
+### Symptom
+
+Running `bbc` exits immediately with a native Opus assertion. No Python stack trace is printed; the shell only shows:
+
+```
+Fatal (internal) error in silk/resampler.c, line 184: assertion failed: inLen >= S->Fs_in_kHz
+Aborted (core dumped)
+```
+
+### Log
+
+```
+papaya@pop-os:~$ bbc
+Fatal (internal) error in silk/resampler.c, line 184: assertion failed: inLen >= S->Fs_in_kHz
+Aborted (core dumped)
+```
+
+### Cause (likely)
+
+Opus/SILK internal resampler received **too few input samples** (`inLen` smaller than one millisecond at the input sample rate). This usually means empty, truncated, or mis-sized PCM reached `opuslib` encode/decode — often when:
+
+- Audio startup partially fails but the voice pipeline still runs
+- A zero-length or sub-frame buffer is passed to the encoder/decoder
+- A background thread encodes before mic capture is producing valid 20 ms frames
+
+Related to the earlier PortAudio startup issue ([above](#linux-portaudio-alsa-output-failure-and-opus-crash-on-startup)), but this variant can appear **without** visible ALSA/PortAudio log lines if the crash happens quickly or stderr is not flushed.
+
+Relevant code: `babblecast/audio/codec.py` (`OpusCodec`), `babblecast/client/session.py` (voice loop), `babblecast/audio/engine.py` (capture/playback).
+
+### Workarounds
+
+- Ensure system audio is healthy (PipeWire/Pulse running; output device works in other apps).
+- Run `bbc server` (headless, no local mic/speaker) to confirm the crash is client-audio-specific.
+- Update to the latest `master` after each fix; re-run `bash packaging/linux/install.sh`.
+
+### Proposed fix
+
+- Never call Opus encode/decode on buffers shorter than `FRAME_SAMPLES` (960 @ 48 kHz).
+- Guard all codec entry points; return silence instead of calling native Opus on invalid input.
+- Defer starting the voice/encode loop until both mic and speaker streams are confirmed open.
+- Catch native abort paths by validating PCM length in Python before every `opuslib` call.
+
