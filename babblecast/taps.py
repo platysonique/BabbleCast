@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from babblecast.paths import app_config_dir
 from babblecast.protocol import new_id
 
 
-def _taps_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    path = Path(base) / "babblecast"
-    path.mkdir(parents=True, exist_ok=True)
-    return path / "taps.json"
+def _taps_path(*, create: bool = False) -> Path:
+    return app_config_dir(create=create) / "taps.json"
 
 
 @dataclass
@@ -78,7 +75,7 @@ class TapStore:
             self._items = []
 
     def save(self) -> None:
-        path = _taps_path()
+        path = _taps_path(create=True)
         payload = {"taps": [asdict(t) for t in self._items]}
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

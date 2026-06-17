@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 
-def _config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    path = Path(base) / "babblecast"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+from babblecast.paths import app_config_dir
+
+
+def _config_dir(*, create: bool = False) -> Path:
+    return app_config_dir(create=create)
 
 
 def _config_path() -> Path:
@@ -60,7 +59,7 @@ class UserSettings:
             return cls()
 
     def save(self) -> None:
-        path = _config_path()
+        path = _config_dir(create=True) / "settings.json"
         path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
 
 
