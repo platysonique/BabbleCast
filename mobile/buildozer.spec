@@ -6,10 +6,13 @@ package.domain = org.babblecast
 package.main = main.py
 source.dir = ..
 source.include_exts = py,png,jpg,kv,atlas,json
-source.include_patterns = babblecast/*,mobile/*,main.py
+source.include_patterns = babblecast/*,mobile/*,main.py,assets/*
 source.exclude_dirs = tests,packaging,.venv,.git,.cache,dist,build,mobile/bin,mobile/.buildozer,scripts,GoonFiles
 source.exclude_patterns = *.spec,*.md,requirements*.txt,pyproject.toml,LICENSE
 version = 1.0.0
+
+icon.filename = %(source.dir)s/assets/icon.png
+presplash.filename = %(source.dir)s/assets/splash.png
 
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,kivymd==1.2.0,pyjnius,android,numpy,zeroconf,websockets,libopus,opuslib,plyer,sqlite3,openssl
 p4a.local_recipes = p4a-recipes

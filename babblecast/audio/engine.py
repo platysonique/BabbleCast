@@ -10,7 +10,7 @@ from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 
-from babblecast.audio.devices import resolve_input_device, resolve_output_device
+from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
 from babblecast.constants import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
 
@@ -89,17 +89,27 @@ class MicCapture:
     def start(self) -> None:
         if self._stream is not None:
             return
-        device = resolve_input_device(self._device_key)
-        self._stream = sd.InputStream(
-            device=device,
-            channels=CHANNELS,
-            samplerate=SAMPLE_RATE,
-            blocksize=FRAME_SAMPLES // 2,
-            dtype="float32",
-            callback=self._callback,
-        )
-        self._stream.start()
-        logger.info("Mic capture started on device index %s (shared/non-exclusive)", device)
+        last_error: Exception | None = None
+        for device in iter_input_device_indices(self._device_key):
+            try:
+                self._stream = sd.InputStream(
+                    device=device,
+                    channels=CHANNELS,
+                    samplerate=SAMPLE_RATE,
+                    blocksize=FRAME_SAMPLES // 2,
+                    dtype="float32",
+                    callback=self._callback,
+                )
+                self._stream.start()
+                logger.info("Mic capture started on device index %s (shared/non-exclusive)", device)
+                return
+            except sd.PortAudioError as exc:
+                last_error = exc
+                logger.warning("Mic open failed on device %s: %s", device, exc)
+                self._stream = None
+        if last_error:
+            raise last_error
+        raise sd.PortAudioError("No input audio device available")
 
     def stop(self) -> None:
         if self._stream:
@@ -148,6 +158,8 @@ class SpeakerOutput:
         self._participant_muted.pop(client_id, None)
 
     def push_pcm(self, client_id: str, pcm: bytes) -> None:
+        if self._stream is None:
+            return
         if self._participant_muted.get(client_id, False):
             return
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
@@ -197,20 +209,34 @@ class SpeakerOutput:
     def start(self) -> None:
         if self._stream is not None:
             return
-        device = resolve_output_device(self._device_key)
-        self._running = True
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="bbc-playback-mix")
-        self._worker.start()
-        self._stream = sd.OutputStream(
-            device=device,
-            channels=CHANNELS,
-            samplerate=SAMPLE_RATE,
-            blocksize=FRAME_SAMPLES,
-            dtype="float32",
-            callback=self._callback,
-        )
-        self._stream.start()
-        logger.info("Speaker output started on device index %s (shared/non-exclusive)", device)
+        last_error: Exception | None = None
+        for device in iter_output_device_indices(self._device_key):
+            self._running = True
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="bbc-playback-mix")
+            self._worker.start()
+            try:
+                self._stream = sd.OutputStream(
+                    device=device,
+                    channels=CHANNELS,
+                    samplerate=SAMPLE_RATE,
+                    blocksize=FRAME_SAMPLES,
+                    dtype="float32",
+                    callback=self._callback,
+                )
+                self._stream.start()
+                logger.info("Speaker output started on device index %s (shared/non-exclusive)", device)
+                return
+            except sd.PortAudioError as exc:
+                last_error = exc
+                logger.warning("Speaker open failed on device %s: %s", device, exc)
+                self._running = False
+                if self._worker:
+                    self._worker.join(timeout=0.5)
+                self._worker = None
+                self._stream = None
+        if last_error:
+            raise last_error
+        raise sd.PortAudioError("No output audio device available")
 
     def stop(self) -> None:
         self._running = False

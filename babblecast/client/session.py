@@ -256,13 +256,18 @@ class ClientSession:
         if self._audio_started or self.is_bridge:
             return
         try:
-            if self._mic:
-                self._mic.start()
             if self._speaker:
                 self._speaker.start()
+            if self._mic:
+                self._mic.start()
             self._audio_started = True
         except Exception as exc:
             logger.exception("Failed to start audio devices")
+            if self._mic:
+                self._mic.stop()
+            if self._speaker:
+                self._speaker.stop()
+            self._audio_started = False
             if self._on_error:
                 self._on_error(f"Audio unavailable: {exc}")
 

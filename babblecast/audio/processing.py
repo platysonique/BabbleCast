@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from babblecast.constants import SAMPLE_RATE
+from babblecast.constants import FRAME_BYTES, SAMPLE_RATE
 
 
 def rms_db(samples: np.ndarray) -> float:
@@ -66,6 +66,8 @@ class NoiseSuppressor:
             return samples
         assert self._nr is not None
         float_samples = samples.astype(np.float32) / 32768.0
+        if len(float_samples) < 1024:
+            return samples
         if self._profile is None and self._profile_frames < 5:
             self._profile = float_samples.copy()
             self._profile_frames += 1

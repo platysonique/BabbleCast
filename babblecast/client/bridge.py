@@ -83,9 +83,10 @@ class BridgeManager:
     def get_session(self, link_id: str) -> ClientSession | None:
         return self._sessions.get(link_id)
 
-    def _ensure_audio(self) -> None:
+    def _ensure_audio(self) -> bool:
+        """Start shared mic/speaker. Returns False if hardware could not open."""
         if self._audio_started:
-            return
+            return True
         self._mic = create_mic(
             device_key=self._settings.input_device,
             gate=self._gate,
@@ -101,13 +102,17 @@ class BridgeManager:
             self._speaker.set_participant_volume(uid, vol)
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
-        self._mic.start()
-        self._speaker.start()
+        try:
+            self._mic.start()
+            self._speaker.start()
+        except Exception as exc:
+            logger.exception("Bridge audio startup failed")
+            self._teardown_audio()
+            return False
         self._audio_started = True
+        return True
 
-    def _stop_audio_if_idle(self) -> None:
-        if self._sessions:
-            return
+    def _teardown_audio(self) -> None:
         if self._mic:
             self._mic.stop()
             self._mic = None
@@ -115,6 +120,11 @@ class BridgeManager:
             self._speaker.stop()
             self._speaker = None
         self._audio_started = False
+
+    def _stop_audio_if_idle(self) -> None:
+        if self._sessions:
+            return
+        self._teardown_audio()
 
     def _on_mic_frame(self, pcm: bytes, _level: float) -> None:
         for link_id, session in list(self._sessions.items()):
@@ -162,7 +172,9 @@ class BridgeManager:
             listen_muted_getter=lambda lid=link_id: self._links[lid].listen_muted,
         )
         self._sessions[link_id] = session
-        self._ensure_audio()
+        if not self._ensure_audio():
+            if self._on_error:
+                self._on_error(link_id, "Audio unavailable — connected for chat only; check speakers/mic")
         session.update_settings(self._settings)
         session.connect(host, port)
         return link_id
