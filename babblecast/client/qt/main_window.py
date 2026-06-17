@@ -464,22 +464,27 @@ class MainWindow(QMainWindow):
                 self._peer_names[(lid, cid)] = str(p.get("name", "?"))
                 pending = ls.pending_taps if ls else set()
                 if composite not in self._participant_widgets:
-                    w = ParticipantWidget(composite, f"{p.get('name', '?')} · {server_label}", is_self=(cid == my_id))
+                    w = ParticipantWidget(
+                        composite,
+                        str(p.get("name", "?")),
+                        server_label,
+                        is_self=(cid == my_id),
+                    )
                     w.volume_changed.connect(self._bridge.set_participant_volume)
                     w.mute_toggled.connect(self._bridge.set_participant_muted)
                     w.tap_requested.connect(lambda pid, ll=lid: self._send_tap(ll, pid))
-                    w.name_clicked.connect(lambda pid, ll=lid: self._open_tap_for_peer(ll, pid))
                     w.reopen_tap_chat.connect(lambda sid, ll=lid: self._reinsert_saved_tap(ll, sid))
                     self._participant_widgets[composite] = w
                     self._participants_layout.insertWidget(self._participants_layout.count() - 1, w)
                 w = self._participant_widgets[composite]
                 w.set_tapped(cid in pending)
                 w.update_state(
-                    name=f"{p.get('name', '?')} · {server_label}",
+                    name=str(p.get("name", "?")),
                     voice_level=float(p.get("voice_level", 0)),
                     muted=bool(p.get("muted", False)),
                     speaking=bool(p.get("speaking", False)),
                     volume=float(p.get("volume", 1.0)),
+                    server_label=server_label,
                 )
         for key in list(self._participant_widgets):
             if key not in seen:

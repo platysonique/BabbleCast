@@ -149,9 +149,21 @@ class BabbleController:
 
     def host_server(self) -> None:
         if self._embedded and self._embedded.running:
-            self.set_status("Server already running — use Connect to join it")
+            self.stop_hosting()
             return
         self._prompt_host_server_name()
+
+    def stop_hosting(self) -> None:
+        if self._embedded and self._embedded.running:
+            self._embedded.stop()
+            self._embedded = None
+            self.set_status("Server stopped")
+        self.refresh_host_ui()
+
+    def refresh_host_ui(self) -> None:
+        screen = self.app.screen("connect")
+        if hasattr(screen, "set_hosting"):
+            screen.set_hosting(bool(self._embedded and self._embedded.running))
 
     def _prompt_host_server_name(self) -> None:
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
@@ -194,6 +206,7 @@ class BabbleController:
         self._embedded = EmbeddedServer(server_name=clean)
         self._embedded.start()
         self.set_status(f"Hosting as “{clean}”…")
+        self.refresh_host_ui()
         threading.Timer(0.8, lambda: Clock.schedule_once(lambda _dt: self._join_local_host())).start()
 
     def _join_local_host(self) -> None:
@@ -296,6 +309,7 @@ class BabbleController:
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
         from kivymd.uix.dialog import MDDialog
         from kivymd.uix.label import MDLabel
+        from kivymd.uix.slider import MDSlider
 
         cid = str(participant.get("client_id", ""))
         name = str(participant.get("name", "?"))
@@ -305,22 +319,53 @@ class BabbleController:
         is_self = cid == my_id
         pending = link.pending_taps if link else set()
         has_tap = cid in pending or bool(self._tap_ids.get((link_id, cid)))
+        composite = composite_participant_key(link_id, cid)
+        muted = bool(participant.get("muted", False))
+        speaking = bool(participant.get("speaking", False))
+        voice_level = float(participant.get("voice_level", 0))
+        volume = float(participant.get("volume", 1.0))
 
-        detail_text = (
-            f"Server: {server}\n"
-            f"Muted: {'Yes' if participant.get('muted') else 'No'}\n"
-            f"PTT active: {'Yes' if participant.get('ptt_active') else 'No'}\n"
-            f"Speaking: {'Yes' if participant.get('speaking') else 'No'}\n"
-            f"Voice level: {float(participant.get('voice_level', 0)):.0%}\n"
-            f"Your volume for them: {int(float(participant.get('volume', 1)) * 100)}%"
-        )
-        body = MDLabel(
-            text=detail_text,
+        info = MDLabel(
+            text=(
+                f"Server: {server}\n"
+                f"Speaking: {'Yes' if speaking else 'No'}\n"
+                f"Voice level: {voice_level:.0%}\n"
+                f"Tap pending: {'Yes' if has_tap else 'No'}"
+            ),
             theme_text_color="Custom",
             text_color=TEXT,
             size_hint_y=None,
         )
-        body.bind(texture_size=lambda _l, s: setattr(body, "height", s[1]))
+        info.bind(texture_size=lambda _l, s: setattr(info, "height", s[1]))
+        body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+        body.add_widget(info)
+
+        vol_label = MDLabel(
+            text=f"Your volume: {int(volume * 100)}%",
+            theme_text_color="Custom",
+            text_color=TEXT,
+            size_hint_y=None,
+            height=dp(24),
+        )
+        vol_slider = MDSlider(min=0, max=200, value=int(volume * 100), step=1)
+
+        def on_vol_change(_slider, value: float) -> None:
+            vol_label.text = f"Your volume: {int(value)}%"
+            self._bridge.set_participant_volume(composite, value / 100.0)
+
+        vol_slider.bind(value=on_vol_change)
+        body.add_widget(vol_label)
+        body.add_widget(vol_slider)
+
+        mute_state = {"muted": muted}
+
+        def toggle_mute(_btn: MDRaisedButton) -> None:
+            mute_state["muted"] = not mute_state["muted"]
+            self._bridge.set_participant_muted(composite, mute_state["muted"])
+            _btn.text = "Unmute" if mute_state["muted"] else "Mute"
+
+        mute_btn = MDRaisedButton(text="Unmute" if muted else "Mute", on_release=toggle_mute)
+        body.add_widget(mute_btn)
 
         dialog_holder: list[MDDialog] = []
 
@@ -348,7 +393,12 @@ class BabbleController:
                     ),
                 )
 
-        dialog = MDDialog(title=f"{name}{' (you)' if is_self else ''}", type="custom", content_cls=body, buttons=buttons)
+        dialog = MDDialog(
+            title=f"{name}{' (you)' if is_self else ''}",
+            type="custom",
+            content_cls=body,
+            buttons=buttons,
+        )
         dialog_holder.append(dialog)
         dialog.open()
 
@@ -464,6 +514,7 @@ class ConnectScreen(MDScreen):
         if not getattr(app, "controller", None):
             return
         self.display_name = app.controller.settings.display_name or "Mobile"
+        app.controller.refresh_host_ui()
 
     def on_leave(self, *_args) -> None:
         pass
@@ -522,9 +573,9 @@ class ConnectScreen(MDScreen):
         manual_row.add_widget(self._port_field)
 
         btn_row = MDBoxLayout(spacing=dp(12), size_hint_y=None, height=dp(48))
-        host_btn = MDRaisedButton(text="Host on this phone", md_bg_color=ACCENT, on_release=lambda *_: self._host())
+        self._host_btn = MDRaisedButton(text="Host on this phone", md_bg_color=ACCENT, on_release=lambda *_: self._host())
         connect_btn = MDRaisedButton(text="Connect", on_release=lambda *_: self._connect())
-        btn_row.add_widget(host_btn)
+        btn_row.add_widget(self._host_btn)
         btn_row.add_widget(connect_btn)
 
         for w in (
@@ -554,6 +605,9 @@ class ConnectScreen(MDScreen):
         except ValueError:
             port = 8765
         app.controller.connect_to(self._host_field.text, port, self._name_field.text)
+
+    def set_hosting(self, active: bool) -> None:
+        self._host_btn.text = "Stop hosting" if active else "Host on this phone"
 
     def set_discovery_status(self, text: str) -> None:
         self._discovery_status.text = text
@@ -602,6 +656,56 @@ class ConnectScreen(MDScreen):
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
         app.controller.connect_to(host, port, self._name_field.text)
+
+
+class PersonNameRow(MDBoxLayout):
+    """Name-only row; long-press opens context menu with More details."""
+
+    def __init__(self, name: str, on_more_details, **kwargs):
+        super().__init__(**kwargs)
+        self._on_more_details = on_more_details
+        self._hold_event = None
+        self._menu = None
+        self.size_hint_y = None
+        self.height = dp(44)
+        from kivymd.uix.label import MDLabel
+
+        self.add_widget(
+            MDLabel(
+                text=name,
+                theme_text_color="Custom",
+                text_color=TEXT,
+                size_hint_x=1,
+            )
+        )
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            self._hold_event = Clock.schedule_once(lambda _dt: self._open_context_menu(), 0.45)
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        if self._hold_event is not None:
+            Clock.unschedule(self._hold_event)
+            self._hold_event = None
+        return super().on_touch_up(touch)
+
+    def _open_context_menu(self) -> None:
+        self._hold_event = None
+        from kivymd.uix.menu import MDDropdownMenu
+
+        def open_details(*_args) -> None:
+            if self._menu:
+                self._menu.dismiss()
+            self._on_more_details()
+
+        self._menu = MDDropdownMenu(
+            caller=self,
+            items=[{"text": "More details", "on_release": open_details}],
+            width_mult=3,
+        )
+        self._menu.open()
 
 
 class LiveScreen(MDScreen):
@@ -818,7 +922,6 @@ class LiveScreen(MDScreen):
         tap_ids: dict,
         active_link_id: str | None,
     ) -> None:
-        from kivymd.uix.button import MDIconButton
         from kivymd.uix.label import MDLabel
 
         self._people_box.clear_widgets()
@@ -857,21 +960,10 @@ class LiveScreen(MDScreen):
             name = str(p.get("name", "?"))
             if cid == my_id:
                 name = f"{name} (you)"
-            row = MDBoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
-            name_label = MDLabel(
-                text=name,
-                theme_text_color="Custom",
-                text_color=TEXT,
-                size_hint_x=0.85,
+            row = PersonNameRow(
+                name,
+                on_more_details=lambda ll=active_link_id, part=dict(p): app.controller.show_person_details(ll, part),
             )
-            row.add_widget(name_label)
-            more_btn = MDIconButton(
-                icon="dots-vertical",
-                on_release=lambda *_a, ll=active_link_id, part=dict(p): app.controller.show_person_details(
-                    ll, part
-                ),
-            )
-            row.add_widget(more_btn)
             self._people_box.add_widget(row)
 
 
