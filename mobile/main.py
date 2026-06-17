@@ -8,7 +8,6 @@ import threading
 from typing import Any
 
 from kivy.clock import Clock
-from kivy.lang import Builder
 from kivy.metrics import dp
 from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivymd.app import MDApp
@@ -26,41 +25,6 @@ from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
 from mobile.permissions import request_android_permissions
 from mobile.theme import ACCENT, BG, MUTED, SURFACE, TEXT, apply_theme
-
-KV = """
-MDNavigationLayout:
-    id: nav_layout
-
-    MDScreenManager:
-        id: screen_manager
-
-        ConnectScreen:
-            name: "connect"
-
-        LiveScreen:
-            name: "live"
-
-        SettingsScreen:
-            name: "settings"
-
-    MDBottomNavigation:
-        id: bottom_nav
-        md_bg_color: app.theme_cls.bg_dark
-        panel_color: [0.14, 0.15, 0.24, 1]
-        text_color_active: [0.48, 0.64, 0.97, 1]
-        MDBottomNavigationItem:
-            icon: "lan-connect"
-            text: "Connect"
-            on_tab_press: app.switch_tab("connect")
-        MDBottomNavigationItem:
-            icon: "account-voice"
-            text: "Live"
-            on_tab_press: app.switch_tab("live")
-        MDBottomNavigationItem:
-            icon: "tune"
-            text: "Settings"
-            on_tab_press: app.switch_tab("settings")
-"""
 
 
 class BabbleController:
@@ -109,7 +73,7 @@ class BabbleController:
 
     def set_status(self, text: str) -> None:
         self.status_text = text
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         if hasattr(live, "status_text"):
             live.status_text = text
 
@@ -124,7 +88,7 @@ class BabbleController:
             self._embedded.stop()
 
     def _apply_servers(self, servers) -> None:
-        screen = self.app.root.ids.screen_manager.get_screen("connect")
+        screen = self.app.screen("connect")
         screen.update_servers(servers)
 
     def select_server(self, host: str, port: int) -> None:
@@ -199,7 +163,7 @@ class BabbleController:
 
     def _join_local_host(self) -> None:
         self.select_server("127.0.0.1", 8765)
-        screen = self.app.root.ids.screen_manager.get_screen("connect")
+        screen = self.app.screen("connect")
         self.connect_selected(screen.display_name)
 
     def _on_link_connected(self, link_id: str) -> None:
@@ -208,13 +172,13 @@ class BabbleController:
             return
         if not self._active_link_id:
             self._active_link_id = link_id
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.add_connected_link(link_id, link)
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.remove_connected_link(link_id)
         self._presence.pop(link_id, None)
         if self._active_link_id == link_id:
@@ -230,7 +194,7 @@ class BabbleController:
         if link:
             self.set_status(f"Active: {link.label}")
         self.chat_text = ""
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.chat_text = ""
 
     def toggle_listen(self, link_id: str) -> None:
@@ -252,13 +216,13 @@ class BabbleController:
     def toggle_mute(self) -> None:
         self.is_muted = not self.is_muted
         self._bridge.set_global_muted(self.is_muted)
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.is_muted = self.is_muted
 
     def toggle_ptt(self) -> None:
         self.ptt_active = not self.ptt_active
         self._bridge.set_global_ptt(self.ptt_active)
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.ptt_active = self.ptt_active
 
     def send_chat(self, text: str) -> None:
@@ -268,14 +232,14 @@ class BabbleController:
 
     def _on_presence(self, link_id: str, participants) -> None:
         self._presence[link_id] = participants
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
 
     def _on_chat(self, link_id: str, data: dict) -> None:
         if link_id != self._active_link_id:
             return
         line = f"{data.get('name', '?')}: {data.get('text', '')}\n"
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.chat_text += line
 
     def set_gate_db(self, value: float) -> None:
@@ -301,7 +265,7 @@ class BabbleController:
         if tap_id and peer_id:
             self._tap_ids[(link_id, peer_id)] = tap_id
         if not data.get("self_sent"):
-            live = self.app.root.ids.screen_manager.get_screen("live")
+            live = self.app.screen("live")
             live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
             self.set_status(f"Tap from {from_name} — tap message icon to open")
         elif target_name:
@@ -364,7 +328,7 @@ class BabbleController:
         if box and tap_input not in box.children:
             box.add_widget(tap_input)
         self._tap_dialog.open()
-        live = self.app.root.ids.screen_manager.get_screen("live")
+        live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
 
     def _on_tap_chat(self, data: dict) -> None:
@@ -380,6 +344,8 @@ class ConnectScreen(MDScreen):
     def on_enter(self, *_args) -> None:
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
+        if not getattr(app, "controller", None):
+            return
         self.display_name = app.controller.settings.display_name or "Mobile"
         app.controller.start_discovery()
 
@@ -709,33 +675,45 @@ class BabbleCastMobileApp(MDApp):
 
     def build(self):
         apply_theme(self)
-        Builder.load_string(KV)
         self.controller = BabbleController(self)
-        from kivymd.uix.navigationdrawer import MDNavigationLayout
 
-        root = MDNavigationLayout()
-        sm = MDScreenManager(id="screen_manager")
+        root = MDBoxLayout(orientation="vertical")
+        sm = MDScreenManager(size_hint_y=1)
         sm.add_widget(ConnectScreen(name="connect"))
         sm.add_widget(LiveScreen(name="live"))
         sm.add_widget(SettingsScreen(name="settings"))
         root.add_widget(sm)
-        from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
 
-        nav = MDBottomNavigation(id="bottom_nav")
-        for icon, text, name in (
-            ("lan-connect", "Connect", "connect"),
-            ("account-voice", "Live", "live"),
-            ("tune", "Settings", "settings"),
+        from kivymd.uix.button import MDFlatButton
+
+        tab_row = MDBoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(52),
+            md_bg_color=SURFACE,
+            padding=(dp(4), dp(4)),
+            spacing=dp(4),
+        )
+        for label, name in (
+            ("Connect", "connect"),
+            ("Live", "live"),
+            ("Settings", "settings"),
         ):
-            item = MDBottomNavigationItem(icon=icon, text=text)
-            item.bind(on_tab_press=lambda _i, n=name: self.switch_tab(n))
-            nav.add_widget(item)
-        root.add_widget(nav)
-        root.ids = {"screen_manager": sm, "bottom_nav": nav}
+            btn = MDFlatButton(
+                text=label,
+                on_release=lambda _w, n=name: self.switch_tab(n),
+            )
+            tab_row.add_widget(btn)
+        root.add_widget(tab_row)
+
+        self._screen_manager = sm
         return root
 
     def switch_tab(self, name: str) -> None:
-        self.root.ids.screen_manager.current = name
+        self._screen_manager.current = name
+
+    def screen(self, name: str) -> MDScreen:
+        return self._screen_manager.get_screen(name)
 
     def on_stop(self) -> None:
         self.controller.stop_all()
