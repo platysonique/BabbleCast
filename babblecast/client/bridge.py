@@ -44,6 +44,8 @@ class BridgeManager:
         on_presence: Callable[[str, str, list[dict]], None] | None = None,
         on_chat: Callable[[str, dict], None] | None = None,
         on_rooms: Callable[[str, list[dict]], None] | None = None,
+        on_joined: Callable[[str, str, str], None] | None = None,
+        on_room_deleted: Callable[[str, str], None] | None = None,
         on_error: Callable[[str, str], None] | None = None,
         on_tap_received: Callable[[str, dict], None] | None = None,
         on_tap_chat: Callable[[str, dict], None] | None = None,
@@ -56,6 +58,8 @@ class BridgeManager:
         self._on_presence = on_presence
         self._on_chat = on_chat
         self._on_rooms = on_rooms
+        self._on_joined = on_joined
+        self._on_room_deleted = on_room_deleted
         self._on_error = on_error
         self._on_tap_received = on_tap_received
         self._on_tap_chat = on_tap_chat
@@ -167,6 +171,8 @@ class BridgeManager:
             on_presence=lambda rid, p, lid=link_id: self._on_presence and self._on_presence(lid, rid, p),
             on_chat=lambda d, lid=link_id: self._on_chat and self._on_chat(lid, d),
             on_rooms=lambda r, lid=link_id: self._on_rooms and self._on_rooms(lid, r),
+            on_joined=lambda rid, rn, lid=link_id: self._on_joined and self._on_joined(lid, rid, rn),
+            on_room_deleted=lambda rid, lid=link_id: self._on_room_deleted and self._on_room_deleted(lid, rid),
             on_connected=_connected,
             on_disconnected=lambda reason, lid=link_id: self._handle_disconnect(lid, reason),
             on_error=lambda m, lid=link_id: self._on_error and self._on_error(lid, m),
@@ -329,6 +335,11 @@ class BridgeManager:
         session = self._sessions.get(link_id)
         if session:
             session.create_room(name)
+
+    def delete_room(self, link_id: str, room_id: str) -> None:
+        session = self._sessions.get(link_id)
+        if session:
+            session.delete_room(room_id)
 
     def join_room(self, link_id: str, room_id: str) -> None:
         session = self._sessions.get(link_id)

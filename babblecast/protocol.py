@@ -27,6 +27,8 @@ class MsgType(str, Enum):
     ROOM_CREATED = "room_created"
     JOIN_ROOM = "join_room"
     JOINED = "joined"
+    DELETE_ROOM = "delete_room"
+    ROOM_DELETED = "room_deleted"
     LEAVE_ROOM = "leave_room"
     PRESENCE = "presence"
     CHAT = "chat"

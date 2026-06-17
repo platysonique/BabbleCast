@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import html
 import socket
+import time
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -36,6 +38,7 @@ from babblecast.client.qt.tap_chat_dialog import TapChatDialog
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import composite_participant_key
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
+from babblecast.room_chat import get_room_chat_store
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import get_tap_store
 
@@ -48,12 +51,17 @@ class _UiSignals(QObject):
     presence = pyqtSignal(str, str, list)
     chat = pyqtSignal(str, dict)
     rooms = pyqtSignal(str, list)
+    joined = pyqtSignal(str, str, str)
+    room_deleted = pyqtSignal(str, str)
     error = pyqtSignal(str, str)
     tap_received = pyqtSignal(str, dict)
     tap_chat = pyqtSignal(str, dict)
     tap_open = pyqtSignal(str, str)
     tap_end = pyqtSignal(str, str)
     servers_found = pyqtSignal(list)
+    embedded_started = pyqtSignal(str, int)
+    embedded_failed = pyqtSignal(str)
+    embedded_stopped = pyqtSignal()
 
 
 class MainWindow(QMainWindow):
@@ -71,10 +79,15 @@ class MainWindow(QMainWindow):
         self._ui.presence.connect(self._on_presence)
         self._ui.chat.connect(self._on_chat)
         self._ui.rooms.connect(self._on_rooms)
+        self._ui.joined.connect(self._on_joined)
+        self._ui.room_deleted.connect(self._on_room_deleted)
         self._ui.tap_received.connect(self._on_tap_received)
         self._ui.tap_chat.connect(self._on_tap_chat)
         self._ui.tap_open.connect(self._on_tap_open)
         self._ui.tap_end.connect(self._on_tap_end)
+        self._ui.embedded_started.connect(self._on_embedded_started)
+        self._ui.embedded_failed.connect(self._on_embedded_failed)
+        self._ui.embedded_stopped.connect(self._on_embedded_stopped)
 
         self._bridge = BridgeManager(
             on_link_connected=lambda lid: self._ui.link_connected.emit(lid),
@@ -82,6 +95,8 @@ class MainWindow(QMainWindow):
             on_presence=lambda lid, rid, p: self._ui.presence.emit(lid, rid, p),
             on_chat=lambda lid, d: self._ui.chat.emit(lid, d),
             on_rooms=lambda lid, r: self._ui.rooms.emit(lid, r),
+            on_joined=lambda lid, rid, rn: self._ui.joined.emit(lid, rid, rn),
+            on_room_deleted=lambda lid, rid: self._ui.room_deleted.emit(lid, rid),
             on_error=lambda lid, m: self._ui.error.emit(lid, m),
             on_tap_received=lambda lid, d: self._ui.tap_received.emit(lid, d),
             on_tap_chat=lambda lid, d: self._ui.tap_chat.emit(lid, d),
@@ -100,6 +115,10 @@ class MainWindow(QMainWindow):
         self._tap_ids: dict[tuple[str, str], str] = {}
         self._tap_dialogs: dict[tuple[str, str], TapChatDialog] = {}
         self._peer_names: dict[tuple[str, str], str] = {}
+        self._room_by_link: dict[str, tuple[str, str]] = {}
+        self._pending_embedded_connect = False
+        self._embedded_host: str = "127.0.0.1"
+        self._embedded_port: int = 8765
 
         self._build_ui()
         self._load_devices()
@@ -107,10 +126,6 @@ class MainWindow(QMainWindow):
 
         if self._settings.window_geometry and len(self._settings.window_geometry) == 4:
             self.setGeometry(*self._settings.window_geometry)
-
-        self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self._refresh_status)
-        self._status_timer.start(500)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -159,8 +174,13 @@ class MainWindow(QMainWindow):
 
         room_group = QGroupBox("Rooms (active server)")
         room_layout = QVBoxLayout(room_group)
+        room_hint = QLabel("Click a room to switch · right-click to delete")
+        room_hint.setStyleSheet("color: #888; font-size: 11px;")
+        room_layout.addWidget(room_hint)
         self._room_list = QListWidget()
-        self._room_list.itemDoubleClicked.connect(self._join_selected_room)
+        self._room_list.itemClicked.connect(self._join_room_item)
+        self._room_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._room_list.customContextMenuRequested.connect(self._room_context_menu)
         room_layout.addWidget(self._room_list)
         room_row = QHBoxLayout()
         self._new_room_edit = QLineEdit()
@@ -170,6 +190,9 @@ class MainWindow(QMainWindow):
         room_row.addWidget(self._new_room_edit)
         room_row.addWidget(self._create_room_btn)
         room_layout.addLayout(room_row)
+        self._current_room_label = QLabel("In room: —")
+        self._current_room_label.setStyleSheet("color: #7aa2f7; font-weight: 600;")
+        room_layout.addWidget(self._current_room_label)
         left.addWidget(room_group)
 
         name_row = QHBoxLayout()
@@ -191,7 +214,7 @@ class MainWindow(QMainWindow):
         self._participants_layout.addStretch()
         scroll.setWidget(self._participants_container)
         part_layout.addWidget(scroll)
-        tap_hint = QLabel("Tap = nudge · 👆 highlight = tap waiting · click name to open private tap chat")
+        tap_hint = QLabel("Tap = nudge · long-press / right-click a name → More details")
         tap_hint.setWordWrap(True)
         tap_hint.setStyleSheet("color: #565f89; font-size: 11px;")
         part_layout.addWidget(tap_hint)
@@ -355,15 +378,56 @@ class MainWindow(QMainWindow):
         name = name[:MAX_NAME_LEN]
         self._settings.hosted_server_name = name
         save_settings(self._settings)
-        self._embedded = EmbeddedServer(server_name=name)
-        self._embedded.start()
-        self._host_server_btn.setText("Stop Server")
-        self._status.setText(f"Hosting as “{name}”…")
-        QTimer.singleShot(500, self._auto_connect_local)
+        self._pending_embedded_connect = True
+        self._status.setText(f"Starting server “{name}”…")
 
-    def _auto_connect_local(self) -> None:
-        if self._embedded and self._embedded.running:
-            self._connect(self._embedded.host, self._embedded.ws_port)
+        def _on_started(host: str, port: int) -> None:
+            self._ui.embedded_started.emit(host, port)
+
+        def _on_failed(reason: str) -> None:
+            self._ui.embedded_failed.emit(reason)
+
+        def _on_stopped() -> None:
+            self._ui.embedded_stopped.emit()
+
+        self._embedded = EmbeddedServer(
+            server_name=name,
+            on_started=_on_started,
+            on_failed=_on_failed,
+            on_stopped=_on_stopped,
+        )
+        self._embedded.start()
+
+    def _on_embedded_started(self, host: str, port: int) -> None:
+        self._embedded_host = host
+        self._embedded_port = port
+        self._host_server_btn.setText("Stop Server")
+        self._status.setText(f"Hosting on {host}:{port} — connecting…")
+        if self._pending_embedded_connect and self._embedded and self._embedded.running:
+            self._pending_embedded_connect = False
+            if not self._already_connected(host, port):
+                self._connect(host, port)
+            else:
+                self._status.setText(f"Hosting on {host}:{port} — already connected")
+
+    def _on_embedded_failed(self, reason: str) -> None:
+        self._pending_embedded_connect = False
+        self._embedded = None
+        self._host_server_btn.setText("Host Server")
+        self._status.setText("Server failed to start")
+        detail = reason
+        if "98" in reason or "already in use" in reason.lower():
+            detail = (
+                f"{reason}\n\nPort 8765 is already in use. "
+                "Another BabbleCast may be running — use Connect instead of Host."
+            )
+        QMessageBox.critical(self, "BabbleCast — host failed", detail)
+
+    def _on_embedded_stopped(self) -> None:
+        self._pending_embedded_connect = False
+        if self._embedded and not self._embedded.running:
+            self._embedded = None
+        self._host_server_btn.setText("Host Server")
 
     def _add_link_widget(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -401,6 +465,8 @@ class MainWindow(QMainWindow):
         self._bridge.request_rooms(link_id)
         self._refresh_status()
         self._status.setText(f"Connected — {label}")
+        if link_id == self._active_link_id:
+            self._reload_chat_log(link_id)
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         self._remove_link_widget(link_id)
@@ -428,8 +494,85 @@ class MainWindow(QMainWindow):
         if link:
             self._status.setText(f"Active server: {link.label}")
         self._bridge.request_rooms(link_id)
+        self._reload_chat_log(link_id)
+
+    def _on_joined(self, link_id: str, room_id: str, room_name: str) -> None:
+        self._room_by_link[link_id] = (room_id, room_name)
+        if link_id == self._active_link_id:
+            self._current_room_label.setText(f"In room: {room_name}")
+            self._reload_chat_log(link_id)
+            self._highlight_current_room(room_id)
+
+    def _on_room_deleted(self, link_id: str, room_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        if link:
+            get_room_chat_store().purge(link.host, link.port, room_id)
+        if self._room_by_link.get(link_id, ("", ""))[0] == room_id:
+            self._room_by_link.pop(link_id, None)
+        if link_id == self._active_link_id:
+            self._reload_chat_log(link_id)
+
+    def _highlight_current_room(self, room_id: str) -> None:
+        for i in range(self._room_list.count()):
+            item = self._room_list.item(i)
+            if item and str(item.data(Qt.ItemDataRole.UserRole)) == room_id:
+                self._room_list.setCurrentItem(item)
+                return
+
+    def _reload_chat_log(self, link_id: str | None = None) -> None:
+        lid = link_id or self._active_link_id
+        if not lid:
+            self._chat_log.clear()
+            self._current_room_label.setText("In room: —")
+            return
+        link = self._bridge.get_link(lid)
+        session = self._bridge.get_session(lid)
+        if not link or not session or not session.room_id:
+            self._chat_log.clear()
+            self._chat_log.append("<i>Waiting for room…</i>")
+            return
+        room_id, room_name = self._room_by_link.get(lid, (session.room_id, "General"))
+        store = get_room_chat_store()
+        lines = store.lines(link.host, link.port, room_id)
         self._chat_log.clear()
-        self._chat_log.append(f"<i>Chat for {link.label if link else link_id}</i>")
+        label = link.label
+        self._current_room_label.setText(f"In room: {room_name}")
+        self._chat_log.append(f"<i>Chat — {html.escape(label)} / {html.escape(room_name)}</i>")
+        for line in lines:
+            ts = datetime.fromtimestamp(line.ts).strftime("%H:%M")
+            self._chat_log.append(
+                f"<b>[{ts}] {html.escape(line.name)}</b>: {html.escape(line.text)}"
+            )
+
+    def _record_chat(self, link_id: str, data: dict) -> None:
+        link = self._bridge.get_link(link_id)
+        session = self._bridge.get_session(link_id)
+        if not link or not session:
+            return
+        room_id = str(data.get("room_id") or session.room_id or "")
+        if not room_id:
+            return
+        room_name = self._room_by_link.get(link_id, ("", "General"))[1]
+        name = str(data.get("name", "?"))
+        text = str(data.get("text", ""))
+        if not text.strip():
+            return
+        get_room_chat_store().append(
+            link.host,
+            link.port,
+            room_id,
+            name,
+            text,
+            client_id=str(data.get("client_id", "")),
+            ts=time.time(),
+            room_name=room_name,
+        )
+
+    def _append_chat_line(self, name: str, text: str, *, ts: float | None = None) -> None:
+        stamp = datetime.fromtimestamp(ts or time.time()).strftime("%H:%M")
+        self._chat_log.append(
+            f"<b>[{stamp}] {html.escape(name)}</b>: {html.escape(text)}"
+        )
 
     def _on_listen_mute(self, link_id: str, muted: bool) -> None:
         self._bridge.set_listen_muted(link_id, muted)
@@ -491,22 +634,33 @@ class MainWindow(QMainWindow):
                 self._participant_widgets.pop(key).deleteLater()
 
     def _on_chat(self, link_id: str, data: dict) -> None:
+        self._record_chat(link_id, data)
         if link_id != self._active_link_id:
             return
-        name = data.get("name", "?")
-        text = data.get("text", "")
-        ts = datetime.now().strftime("%H:%M")
-        self._chat_log.append(f"<b>[{ts}] {name}</b>: {text}")
+        name = str(data.get("name", "?"))
+        text = str(data.get("text", ""))
+        self._append_chat_line(name, text)
 
     def _on_rooms(self, link_id: str, rooms: list[dict]) -> None:
         if link_id != self._active_link_id:
             return
+        session = self._bridge.get_session(link_id)
+        current_rid = ""
+        if session and session.room_id:
+            current_rid = session.room_id
+        elif link_id in self._room_by_link:
+            current_rid = self._room_by_link[link_id][0]
         self._room_list.clear()
         for r in rooms:
+            rid = str(r.get("room_id", ""))
             label = f"{r.get('name', 'Room')} ({r.get('member_count', 0)})"
+            if rid == current_rid:
+                label = f"▸ {label}"
             item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, r.get("room_id"))
+            item.setData(Qt.ItemDataRole.UserRole, rid)
             self._room_list.addItem(item)
+        if current_rid:
+            self._highlight_current_room(current_rid)
 
     def _create_room(self) -> None:
         if not self._active_link_id:
@@ -516,20 +670,71 @@ class MainWindow(QMainWindow):
             self._bridge.create_room(self._active_link_id, name)
             self._new_room_edit.clear()
 
-    def _join_selected_room(self) -> None:
+    def _join_room_item(self, item: QListWidgetItem) -> None:
         if not self._active_link_id:
             return
+        room_id = str(item.data(Qt.ItemDataRole.UserRole))
+        if not room_id:
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        if session and session.room_id == room_id:
+            return
+        self._bridge.join_room(self._active_link_id, room_id)
+        self._status.setText("Switching room…")
+
+    def _room_context_menu(self, pos) -> None:
+        if not self._active_link_id:
+            return
+        item = self._room_list.itemAt(pos)
+        if not item:
+            return
+        room_id = str(item.data(Qt.ItemDataRole.UserRole))
+        if not room_id:
+            return
+        from PyQt6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        menu.addAction("Join room", lambda: self._join_room_item(item))
+        if self._room_list.count() > 1:
+            menu.addAction("Delete room", lambda: self._delete_room(room_id, item.text().lstrip("▸ ")))
+        menu.exec(self._room_list.mapToGlobal(pos))
+
+    def _delete_room(self, room_id: str, label: str) -> None:
+        if not self._active_link_id:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete room",
+            f"Delete “{label.split(' (')[0]}”?\n\nEveryone in that room moves to another room. "
+            "Local chat history for this room is removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._bridge.delete_room(self._active_link_id, room_id)
+
+    def _join_selected_room(self) -> None:
         item = self._room_list.currentItem()
         if item:
-            self._bridge.join_room(self._active_link_id, str(item.data(Qt.ItemDataRole.UserRole)))
+            self._join_room_item(item)
 
     def _send_chat(self) -> None:
         if not self._active_link_id:
+            QMessageBox.information(
+                self,
+                "BabbleCast",
+                "Connect to a server first (Host Server or pick one from Discover).",
+            )
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        if not session or not session.room_id:
+            QMessageBox.information(self, "BabbleCast", "Join a room before chatting.")
             return
         text = self._chat_input.text().strip()
-        if text:
-            self._bridge.send_chat(self._active_link_id, text)
-            self._chat_input.clear()
+        if not text:
+            return
+        self._bridge.send_chat(self._active_link_id, text)
+        self._chat_input.clear()
 
     def _toggle_mute(self, checked: bool) -> None:
         self._self_muted = checked

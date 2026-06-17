@@ -74,6 +74,7 @@ def test_voice_udp_relay_two_clients() -> None:
         time.sleep(0.5)
 
         session_a.send_voice_pcm(pcm)
+        session_a.send_voice_pcm(pcm)
         deadline = time.time() + 3
         while time.time() < deadline and not collector.frames:
             time.sleep(0.05)

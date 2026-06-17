@@ -6,6 +6,8 @@ from babblecast.constants import FRAME_BYTES
 
 # Max consecutive PLC frames before giving up on a gap burst.
 _MAX_PLC_BURST = 6
+# Hold first packets briefly to absorb jitter (~40ms @ 20ms frames).
+_PRIMING_FRAMES = 2
 
 
 def _seq_after(seq: int) -> int:
@@ -26,16 +28,23 @@ class VoiceJitterBuffer:
 
     def __init__(self) -> None:
         self._last_seq: int | None = None
+        self._pending: list[bytes] = []
 
     def reset(self) -> None:
         self._last_seq = None
+        self._pending.clear()
 
     def push(self, sequence: int, opus_payload: bytes) -> list[bytes | None]:
         if not opus_payload:
             return []
         if self._last_seq is None:
+            self._pending.append(opus_payload)
+            if len(self._pending) < _PRIMING_FRAMES:
+                return []
+            out = list(self._pending)
+            self._pending.clear()
             self._last_seq = sequence
-            return [opus_payload]
+            return out
 
         if sequence == self._last_seq:
             return []  # duplicate

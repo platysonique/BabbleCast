@@ -20,12 +20,14 @@ class EmbeddedServer:
         udp_port: int = DEFAULT_UDP_PORT,
         server_name: str = "BabbleCast",
         on_started: Callable[[str, int], None] | None = None,
+        on_failed: Callable[[str], None] | None = None,
         on_stopped: Callable[[], None] | None = None,
     ) -> None:
         self._ws_port = ws_port
         self._udp_port = udp_port
         self._server_name = server_name
         self._on_started = on_started
+        self._on_failed = on_failed
         self._on_stopped = on_stopped
         self._hub: BabbleCastHub | None = None
         self._thread: threading.Thread | None = None
@@ -60,8 +62,10 @@ class EmbeddedServer:
             if self._on_started:
                 self._on_started(self.host, self._ws_port)
             self._loop.run_forever()
-        except Exception:
+        except Exception as exc:
             logger.exception("Embedded server failed")
+            if self._on_failed:
+                self._on_failed(str(exc))
         finally:
             self._running = False
             if self._hub and self._loop and not self._loop.is_closed():

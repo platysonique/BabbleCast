@@ -28,6 +28,8 @@ class ClientSession:
         on_presence: Callable[[str, list[dict]], None] | None = None,
         on_chat: Callable[[dict], None] | None = None,
         on_rooms: Callable[[list[dict]], None] | None = None,
+        on_joined: Callable[[str, str], None] | None = None,
+        on_room_deleted: Callable[[str], None] | None = None,
         on_connected: Callable[[], None] | None = None,
         on_disconnected: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
@@ -43,6 +45,8 @@ class ClientSession:
         self._on_presence = on_presence
         self._on_chat = on_chat
         self._on_rooms = on_rooms
+        self._on_joined = on_joined
+        self._on_room_deleted = on_room_deleted
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_error = on_error
@@ -226,6 +230,8 @@ class ClientSession:
                 encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
             )
             self._start_audio()
+            if self._on_joined and self._room_id:
+                self._on_joined(self._room_id, str(data.get("room_name", "General")))
             if self._on_connected:
                 self._on_connected()
             return
@@ -243,6 +249,12 @@ class ClientSession:
             return
         if mtype == MsgType.JOINED:
             self._room_id = str(data.get("room_id", ""))
+            if self._on_joined and self._room_id:
+                self._on_joined(self._room_id, str(data.get("room_name", "Room")))
+            return
+        if mtype == MsgType.ROOM_DELETED:
+            if self._on_room_deleted:
+                self._on_room_deleted(str(data.get("room_id", "")))
             return
         if mtype == MsgType.TAP_RECEIVED:
             if self._on_tap_received:
@@ -440,6 +452,9 @@ class ClientSession:
 
     def create_room(self, name: str) -> None:
         self._send_async(encode_msg(MsgType.CREATE_ROOM, name=name))
+
+    def delete_room(self, room_id: str) -> None:
+        self._send_async(encode_msg(MsgType.DELETE_ROOM, room_id=room_id))
 
     def join_room(self, room_id: str) -> None:
         self._send_async(encode_msg(MsgType.JOIN_ROOM, room_id=room_id))

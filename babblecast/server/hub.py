@@ -146,7 +146,20 @@ class BabbleCastHub:
             name = clamp_room_name(str(data.get("name", "Room")))
             room = Room(room_id=new_id(), name=name)
             self._rooms[room.room_id] = room
-            await client.ws.send(encode_msg(MsgType.ROOM_CREATED, room=RoomInfo(room.room_id, room.name, 0).to_dict()))
+            if client.room_id:
+                old = self._rooms.get(client.room_id)
+                if old:
+                    old.members.discard(client.client_id)
+                    await self._send_presence(client.room_id)
+            client.room_id = room.room_id
+            room.members.add(client.client_id)
+            await client.ws.send(
+                encode_msg(MsgType.ROOM_CREATED, room=RoomInfo(room.room_id, room.name, 1).to_dict())
+            )
+            await client.ws.send(
+                encode_msg(MsgType.JOINED, room_id=room.room_id, room_name=room.name)
+            )
+            await self._send_presence(room.room_id)
             await self._broadcast_all_rooms()
             return
 
@@ -165,6 +178,38 @@ class BabbleCastHub:
             room.members.add(client.client_id)
             await client.ws.send(encode_msg(MsgType.JOINED, room_id=room_id, room_name=room.name))
             await self._send_presence(room_id)
+            await self._broadcast_all_rooms()
+            return
+
+        if mtype == MsgType.DELETE_ROOM:
+            room_id = str(data.get("room_id", ""))
+            room = self._rooms.get(room_id)
+            if not room:
+                await client.ws.send(encode_msg(MsgType.ERROR, message="Room not found"))
+                return
+            if len(self._rooms) <= 1:
+                await client.ws.send(encode_msg(MsgType.ERROR, message="Cannot delete the last room"))
+                return
+            fallback = next(r for rid, r in self._rooms.items() if rid != room_id)
+            members = list(room.members)
+            for cid in members:
+                member = self._clients.get(cid)
+                if not member:
+                    continue
+                member.room_id = fallback.room_id
+                fallback.members.add(cid)
+                await member.ws.send(
+                    encode_msg(
+                        MsgType.JOINED,
+                        room_id=fallback.room_id,
+                        room_name=fallback.name,
+                    )
+                )
+            del self._rooms[room_id]
+            deleted_msg = encode_msg(MsgType.ROOM_DELETED, room_id=room_id)
+            for c in self._clients.values():
+                await c.ws.send(deleted_msg)
+            await self._send_presence(fallback.room_id)
             await self._broadcast_all_rooms()
             return
 

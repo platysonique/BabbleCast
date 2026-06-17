@@ -4,7 +4,8 @@ BabbleCast mobile client — Tokyo Night UI with bottom navigation.
 
 from __future__ import annotations
 
-import threading
+import time
+from datetime import datetime
 from typing import Any
 
 from kivy.clock import Clock
@@ -21,6 +22,7 @@ from babblecast.client.bridge import BridgeManager
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
+from babblecast.room_chat import get_room_chat_store
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
 from mobile.android_network import acquire_multicast_lock, release_multicast_lock
@@ -44,6 +46,12 @@ class BabbleController:
             ),
             on_chat=lambda lid, d: Clock.schedule_once(lambda _dt, i=lid, msg=d: self._on_chat(i, msg)),
             on_rooms=lambda lid, r: Clock.schedule_once(lambda _dt, i=lid, rooms=r: self._on_rooms(i, rooms)),
+            on_joined=lambda lid, rid, rn: Clock.schedule_once(
+                lambda _dt, i=lid, room_id=rid, room_name=rn: self._on_joined(i, room_id, room_name)
+            ),
+            on_room_deleted=lambda lid, rid: Clock.schedule_once(
+                lambda _dt, i=lid, room_id=rid: self._on_room_deleted(i, room_id)
+            ),
             on_error=lambda lid, m: Clock.schedule_once(lambda _dt, msg=m: self.set_status(msg)),
             on_tap_received=lambda lid, d: Clock.schedule_once(
                 lambda _dt, i=lid, data=d: self._on_tap_received(i, data)
@@ -65,6 +73,9 @@ class BabbleController:
         self._tap_peer_name = ""
         self._pending_host: str | None = None
         self._pending_port: int | None = None
+        self._room_by_link: dict[str, tuple[str, str]] = {}
+        self._pending_embedded_connect = False
+        self.current_room_text = "In room: —"
         self.status_text = "Offline — connect to one or more servers"
         self.chat_text = ""
         self.is_muted = False
@@ -203,15 +214,62 @@ class BabbleController:
         clean = name.strip()[:MAX_NAME_LEN]
         self._settings.hosted_server_name = clean
         save_settings(self._settings)
-        self._embedded = EmbeddedServer(server_name=clean)
+        self._pending_embedded_connect = True
+        self.set_status(f"Starting server “{clean}”…")
+
+        def on_started(host: str, port: int) -> None:
+            Clock.schedule_once(lambda _dt: self._on_embedded_started(host, port), 0)
+
+        def on_failed(reason: str) -> None:
+            Clock.schedule_once(lambda _dt: self._on_embedded_failed(reason), 0)
+
+        def on_stopped() -> None:
+            Clock.schedule_once(lambda _dt: self._on_embedded_stopped(), 0)
+
+        self._embedded = EmbeddedServer(
+            server_name=clean,
+            on_started=on_started,
+            on_failed=on_failed,
+            on_stopped=on_stopped,
+        )
         self._embedded.start()
-        self.set_status(f"Hosting as “{clean}”…")
+
+    def _on_embedded_started(self, host: str, port: int) -> None:
         self.refresh_host_ui()
-        threading.Timer(0.8, lambda: Clock.schedule_once(lambda _dt: self._join_local_host())).start()
+        self.set_status(f"Hosting on {host}:{port} — connecting…")
+        if self._pending_embedded_connect and self._embedded and self._embedded.running:
+            self._pending_embedded_connect = False
+            screen = self.app.screen("connect")
+            already = any(
+                l.host == host and l.port == port and l.connected for l in self._bridge.links
+            )
+            if not already:
+                self.connect_to(host, port, screen.display_name)
+            else:
+                self.set_status(f"Hosting on {host}:{port} — already connected")
+
+    def _on_embedded_failed(self, reason: str) -> None:
+        self._pending_embedded_connect = False
+        self._embedded = None
+        self.refresh_host_ui()
+        detail = reason
+        if "98" in reason or "already in use" in reason.lower():
+            detail = (
+                f"{reason} — port 8765 in use. Connect to the existing server instead of hosting."
+            )
+        self.set_status(f"Host failed: {detail}")
+
+    def _on_embedded_stopped(self) -> None:
+        self._pending_embedded_connect = False
+        if self._embedded and not self._embedded.running:
+            self._embedded = None
+        self.refresh_host_ui()
 
     def _join_local_host(self) -> None:
+        """Legacy — host connect is driven by EmbeddedServer.on_started."""
         screen = self.app.screen("connect")
-        self.connect_to("127.0.0.1", 8765, screen.display_name)
+        if self._embedded and self._embedded.running:
+            self.connect_to(self._embedded.host, self._embedded.ws_port, screen.display_name)
 
     def _on_link_connected(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -225,7 +283,9 @@ class BabbleController:
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
         rooms = self._rooms.get(link_id, [])
-        live.update_rooms(rooms, self._active_link_id == link_id)
+        live.update_rooms(rooms, self._active_link_id == link_id, self._current_room_id(link_id))
+        if link_id == self._active_link_id:
+            self._reload_chat(link_id)
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         live = self.app.screen("live")
@@ -244,11 +304,85 @@ class BabbleController:
         link = self._bridge.get_link(link_id)
         if link:
             self.set_status(f"Active: {link.label}")
-        self.chat_text = ""
         live = self.app.screen("live")
-        live.chat_text = ""
         rooms = self._rooms.get(link_id, [])
-        live.update_rooms(rooms, True)
+        live.update_rooms(rooms, True, self._current_room_id(link_id))
+        self._reload_chat(link_id)
+
+    def _current_room_id(self, link_id: str) -> str:
+        session = self._bridge.get_session(link_id)
+        if session and session.room_id:
+            return session.room_id
+        return self._room_by_link.get(link_id, ("", ""))[0]
+
+    def _on_joined(self, link_id: str, room_id: str, room_name: str) -> None:
+        self._room_by_link[link_id] = (room_id, room_name)
+        if link_id == self._active_link_id:
+            self.current_room_text = f"In room: {room_name}"
+            live = self.app.screen("live")
+            if hasattr(live, "current_room_text"):
+                live.current_room_text = self.current_room_text
+            self._reload_chat(link_id)
+            rooms = self._rooms.get(link_id, [])
+            live.update_rooms(rooms, True, room_id)
+
+    def _on_room_deleted(self, link_id: str, room_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        if link:
+            get_room_chat_store().purge(link.host, link.port, room_id)
+        if link_id == self._active_link_id:
+            self._reload_chat(link_id)
+            rooms = self._rooms.get(link_id, [])
+            live = self.app.screen("live")
+            live.update_rooms(rooms, True, self._current_room_id(link_id))
+
+    def _reload_chat(self, link_id: str | None = None) -> None:
+        lid = link_id or self._active_link_id
+        live = self.app.screen("live")
+        if not lid:
+            self.chat_text = ""
+            live.chat_text = ""
+            return
+        link = self._bridge.get_link(lid)
+        session = self._bridge.get_session(lid)
+        if not link or not session or not session.room_id:
+            self.chat_text = "Waiting for room…\n"
+            live.chat_text = self.chat_text
+            return
+        room_id, room_name = self._room_by_link.get(lid, (session.room_id, "General"))
+        self.current_room_text = f"In room: {room_name}"
+        if hasattr(live, "current_room_text"):
+            live.current_room_text = self.current_room_text
+        lines = get_room_chat_store().lines(link.host, link.port, room_id)
+        parts = [f"Chat — {link.label} / {room_name}\n"]
+        for line in lines:
+            ts = datetime.fromtimestamp(line.ts).strftime("%H:%M")
+            parts.append(f"[{ts}] {line.name}: {line.text}\n")
+        self.chat_text = "".join(parts)
+        live.chat_text = self.chat_text
+
+    def _record_chat(self, link_id: str, data: dict) -> None:
+        link = self._bridge.get_link(link_id)
+        session = self._bridge.get_session(link_id)
+        if not link or not session:
+            return
+        room_id = str(data.get("room_id") or session.room_id or "")
+        if not room_id:
+            return
+        room_name = self._room_by_link.get(link_id, ("", "General"))[1]
+        text = str(data.get("text", ""))
+        if not text.strip():
+            return
+        get_room_chat_store().append(
+            link.host,
+            link.port,
+            room_id,
+            str(data.get("name", "?")),
+            text,
+            client_id=str(data.get("client_id", "")),
+            ts=time.time(),
+            room_name=room_name,
+        )
 
     def toggle_listen(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -279,7 +413,14 @@ class BabbleController:
         live.ptt_active = self.ptt_active
 
     def send_chat(self, text: str) -> None:
-        if not self._active_link_id or not text.strip():
+        if not self._active_link_id:
+            self.set_status("Connect to a server first")
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        if not session or not session.room_id:
+            self.set_status("Join a room before chatting")
+            return
+        if not text.strip():
             return
         self._bridge.send_chat(self._active_link_id, text.strip())
 
@@ -291,13 +432,44 @@ class BabbleController:
     def _on_rooms(self, link_id: str, rooms: list) -> None:
         self._rooms[link_id] = rooms
         live = self.app.screen("live")
-        live.update_rooms(rooms, self._active_link_id == link_id)
+        live.update_rooms(rooms, self._active_link_id == link_id, self._current_room_id(link_id))
 
     def join_room(self, room_id: str) -> None:
         if not self._active_link_id:
             return
+        session = self._bridge.get_session(self._active_link_id)
+        if session and session.room_id == room_id:
+            return
         self._bridge.join_room(self._active_link_id, room_id)
         self.set_status("Switching room…")
+
+    def delete_room(self, room_id: str, room_name: str) -> None:
+        if not self._active_link_id:
+            return
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+        from kivymd.uix.dialog import MDDialog
+
+        def confirm(_btn) -> None:
+            dialog.dismiss()
+            self._bridge.delete_room(self._active_link_id, room_id)
+            self.set_status(f"Deleting room “{room_name}”…")
+
+        def cancel(_btn) -> None:
+            dialog.dismiss()
+
+        dialog = MDDialog(
+            title="Delete room",
+            text=(
+                f"Delete “{room_name}”?\n\n"
+                "Everyone in that room moves to another room. "
+                "Local chat history for this room is removed."
+            ),
+            buttons=[
+                MDFlatButton(text="Cancel", on_release=cancel),
+                MDRaisedButton(text="Delete", on_release=confirm),
+            ],
+        )
+        dialog.open()
 
     def create_room(self, name: str) -> None:
         if not self._active_link_id or not name.strip():
@@ -403,11 +575,13 @@ class BabbleController:
         dialog.open()
 
     def _on_chat(self, link_id: str, data: dict) -> None:
+        self._record_chat(link_id, data)
         if link_id != self._active_link_id:
             return
         line = f"{data.get('name', '?')}: {data.get('text', '')}\n"
+        self.chat_text += line
         live = self.app.screen("live")
-        live.chat_text += line
+        live.chat_text = self.chat_text
 
     def set_gate_db(self, value: float) -> None:
         self._bridge.set_gate_db(value)
@@ -711,6 +885,7 @@ class PersonNameRow(MDBoxLayout):
 class LiveScreen(MDScreen):
     status_text = StringProperty("Offline")
     chat_text = StringProperty("")
+    current_room_text = StringProperty("In room: —")
     is_muted = BooleanProperty(False)
     ptt_active = BooleanProperty(False)
 
@@ -733,6 +908,15 @@ class LiveScreen(MDScreen):
         conn_scroll.add_widget(self._connected_box)
 
         rooms_label = MDLabel(text="Rooms (active server)", font_style="H6", theme_text_color="Custom", text_color=TEXT)
+        self._current_room = MDLabel(
+            text=self.current_room_text,
+            theme_text_color="Custom",
+            text_color=ACCENT,
+            font_style="Subtitle2",
+            size_hint_y=None,
+            height=dp(28),
+        )
+        self.bind(current_room_text=lambda _s, v: setattr(self._current_room, "text", v))
         room_create = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
         self._new_room_field = MDTextField(
             hint_text="New room name",
@@ -778,6 +962,7 @@ class LiveScreen(MDScreen):
             conn_label,
             conn_scroll,
             rooms_label,
+            self._current_room,
             room_create,
             rooms_scroll,
             people_label,
@@ -815,7 +1000,8 @@ class LiveScreen(MDScreen):
             app.controller.create_room(name)
             self._new_room_field.text = ""
 
-    def update_rooms(self, rooms: list, is_active: bool) -> None:
+    def update_rooms(self, rooms: list, is_active: bool, current_room_id: str = "") -> None:
+        from kivy.clock import Clock
         from kivymd.uix.label import MDLabel
 
         self._rooms_box.clear_widgets()
@@ -834,25 +1020,61 @@ class LiveScreen(MDScreen):
             return
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
+        can_delete = len(rooms) > 1
         for r in rooms:
             rid = str(r.get("room_id", ""))
             name = str(r.get("name", "Room"))
             count = int(r.get("member_count", 0))
+            is_current = rid == current_room_id
+            label_text = f"▸ {name} ({count})" if is_current else f"{name} ({count})"
             row = MDCard(
                 padding=dp(8),
                 size_hint_y=None,
                 height=dp(40),
-                md_bg_color=SURFACE,
+                md_bg_color=ACCENT if is_current else SURFACE,
                 ripple_behavior=True,
             )
             row.add_widget(
                 MDLabel(
-                    text=f"{name} ({count})",
+                    text=label_text,
                     theme_text_color="Custom",
-                    text_color=TEXT,
+                    text_color=BG if is_current else TEXT,
                 )
             )
-            row.bind(on_release=lambda _w, r=rid: app.controller.join_room(r))
+
+            def on_tap(_w, room_id=rid) -> None:
+                if row._long_pressed:  # type: ignore[attr-defined]
+                    row._long_pressed = False  # type: ignore[attr-defined]
+                    return
+                if room_id != current_room_id:
+                    app.controller.join_room(room_id)
+
+            def bind_long_press(card, room_id=rid, room_name=name) -> None:
+                card._long_pressed = False  # type: ignore[attr-defined]
+                state: dict[str, object | None] = {"ev": None}
+
+                def fire_long(_dt) -> None:
+                    state["ev"] = None
+                    card._long_pressed = True  # type: ignore[attr-defined]
+                    app.controller.delete_room(room_id, room_name)
+
+                def touch_down(_card, touch) -> bool:
+                    if card.collide_point(*touch.pos):
+                        state["ev"] = Clock.schedule_once(fire_long, 0.6)
+                    return False
+
+                def touch_up(_card, touch) -> bool:
+                    ev = state.get("ev")
+                    if ev is not None:
+                        Clock.unschedule(ev)  # type: ignore[arg-type]
+                        state["ev"] = None
+                    return False
+
+                card.bind(on_touch_down=touch_down, on_touch_up=touch_up)
+
+            row.bind(on_release=on_tap)
+            if can_delete:
+                bind_long_press(row, rid, name)
             self._rooms_box.add_widget(row)
 
     def connected_link_ids(self) -> list[str]:
