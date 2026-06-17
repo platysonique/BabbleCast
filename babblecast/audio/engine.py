@@ -115,10 +115,15 @@ class MicCapture:
         raise sd.PortAudioError("No input audio device available")
 
     def stop(self) -> None:
+        with self._lock:
+            self._enabled = False
+            self._on_level = None
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        with self._lock:
+            self._buffer = np.zeros(0, dtype=np.int16)
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key
@@ -243,6 +248,10 @@ class SpeakerOutput:
 
     def stop(self) -> None:
         self._running = False
+        worker = self._worker
+        if worker:
+            worker.join(timeout=1.0)
+            self._worker = None
         if self._stream:
             self._stream.stop()
             self._stream.close()

@@ -20,6 +20,8 @@ from babblecast.constants import (
 
 class ErrorCode(str, Enum):
     NAME_TAKEN = "name_taken"
+    PASSWORD_REQUIRED = "password_required"
+    PASSWORD_WRONG = "password_wrong"
     ROOM_NOT_FOUND = "room_not_found"
     LAST_ROOM = "last_room"
     USER_NOT_FOUND = "user_not_found"
@@ -87,6 +89,13 @@ def is_name_taken_error(error_code: str | None, message: str = "") -> bool:
     if error_code == ErrorCode.NAME_TAKEN.value:
         return True
     return "name already in use" in message.lower()
+
+
+def is_password_error(error_code: str | None, message: str = "") -> bool:
+    if error_code in (ErrorCode.PASSWORD_REQUIRED.value, ErrorCode.PASSWORD_WRONG.value):
+        return True
+    lowered = message.lower()
+    return "password" in lowered and ("wrong" in lowered or "required" in lowered or "incorrect" in lowered)
 
 
 def clamp_name(name: str) -> str:

@@ -77,6 +77,7 @@ class ClientSession:
         self._speaker = None
         self._host = ""
         self._ws_port = 8765
+        self._password = ""
         self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
@@ -324,9 +325,12 @@ class ClientSession:
     async def _run_ws(self) -> None:
         uri = f"ws://{self._host}:{self._ws_port}"
         name = self._settings.display_name.strip() or socket.gethostname()
+        hello_payload: dict[str, Any] = {"name": name, "client_id": self._client_id}
+        if self._password:
+            hello_payload["password"] = self._password
         async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
             self._ws = ws
-            await ws.send(encode_msg(MsgType.HELLO, name=name, client_id=self._client_id))
+            await ws.send(encode_msg(MsgType.HELLO, **hello_payload))
             async for raw in ws:
                 if isinstance(raw, bytes):
                     continue
@@ -378,13 +382,14 @@ class ClientSession:
             if self._on_disconnected and not self._user_disconnect:
                 self._on_disconnected(disconnect_reason or "Connection closed")
 
-    def connect(self, host: str, ws_port: int = 8765) -> None:
+    def connect(self, host: str, ws_port: int = 8765, password: str = "") -> None:
         if self._running:
             self.disconnect()
         self._user_disconnect = False
         self._welcomed = False
         self._host = host
         self._ws_port = ws_port
+        self._password = password
         if not self.is_bridge:
             self._settings.last_server_host = host
             self._settings.last_server_port = ws_port

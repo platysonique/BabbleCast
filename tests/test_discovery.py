@@ -50,7 +50,7 @@ def test_advertiser_from_asyncio_thread() -> None:
 
 
 def test_advertiser_standalone_thread() -> None:
-    adv = ServerAdvertiser("Test", ws_port=28767, udp_port=28768, host="127.0.0.1")
+    adv = ServerAdvertiser("Test", ws_port=28767, udp_port=28768, hosts=["127.0.0.1"])
     adv.start()
     time.sleep(0.3)
     adv.stop()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -11,21 +12,19 @@ from typing import Callable
 
 from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
-from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, SERVICE_TYPE
+from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, LOCAL_DOMAIN, SERVICE_TYPE
+from babblecast.network import local_ipv4_addresses
 
 logger = logging.getLogger(__name__)
 
 
-def _local_ips() -> list[str]:
-    ips: list[str] = []
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            ips.append(s.getsockname()[0])
-    except OSError:
-        pass
-    ips.append("127.0.0.1")
-    return list(dict.fromkeys(ips))
+def slugify_server_name(name: str) -> str:
+    safe = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return safe or "babblecast"
+
+
+def service_hostname(slug: str) -> str:
+    return f"{slug}.{LOCAL_DOMAIN}"
 
 
 @dataclass(frozen=True)
@@ -40,7 +39,19 @@ class DiscoveredServer:
 
     @property
     def label(self) -> str:
-        return f"{self.name} ({self.host}:{self.ws_port})"
+        host_label = self.hostname or f"{self.host}:{self.ws_port}"
+        return f"{self.name} ({host_label})"
+
+    @property
+    def hostname(self) -> str:
+        slug = self.properties.get("host", "")
+        if slug:
+            return service_hostname(slug)
+        return ""
+
+    @property
+    def password_required(self) -> bool:
+        return self.properties.get("auth", "0") == "1"
 
 
 class ServerAdvertiser:
@@ -55,12 +66,16 @@ class ServerAdvertiser:
         server_name: str,
         ws_port: int = DEFAULT_WS_PORT,
         udp_port: int = DEFAULT_UDP_PORT,
-        host: str | None = None,
+        hosts: list[str] | None = None,
+        *,
+        password_protected: bool = False,
     ) -> None:
         self._server_name = server_name
         self._ws_port = ws_port
         self._udp_port = udp_port
-        self._host = host or _local_ips()[0]
+        self._hosts = hosts if hosts is not None else local_ipv4_addresses()
+        self._password_protected = password_protected
+        self._slug = slugify_server_name(server_name)
         self._zc: Zeroconf | None = None
         self._info: ServiceInfo | None = None
         self._thread: threading.Thread | None = None
@@ -85,29 +100,41 @@ class ServerAdvertiser:
         zc: Zeroconf | None = None
         info: ServiceInfo | None = None
         try:
-            safe = self._server_name.replace(" ", "-").lower()
+            addresses = []
+            for host in self._hosts:
+                try:
+                    addresses.append(socket.inet_aton(host))
+                except OSError:
+                    continue
+            if not addresses:
+                addresses = [socket.inet_aton("127.0.0.1")]
             zc = Zeroconf(ip_version=IPVersion.V4Only)
+            hostname = f"{self._slug}.{LOCAL_DOMAIN}."
             info = ServiceInfo(
                 SERVICE_TYPE,
-                f"{safe}.{SERVICE_TYPE}",
-                addresses=[socket.inet_aton(self._host)],
+                f"{self._slug}.{SERVICE_TYPE}",
+                addresses=addresses,
                 port=self._ws_port,
                 properties={
                     "name": self._server_name,
                     "udp": str(self._udp_port),
                     "ver": "1",
+                    "host": self._slug,
+                    "auth": "1" if self._password_protected else "0",
                 },
-                server=f"{safe}.local.",
+                server=hostname,
             )
             zc.register_service(info)
             self._zc = zc
             self._info = info
             self._ready_event.set()
             logger.info(
-                "Advertising BabbleCast server %s on %s:%s",
+                "Advertising BabbleCast server %s as %s on %s:%s (IPs: %s)",
                 self._server_name,
-                self._host,
+                service_hostname(self._slug),
+                self._hosts,
                 self._ws_port,
+                ", ".join(self._hosts) or "127.0.0.1",
             )
             self._stop_event.wait()
         except Exception:
@@ -162,7 +189,10 @@ class ServerDiscovery:
         host = socket.inet_ntoa(info.addresses[0]) if info.addresses else ""
         if not host:
             return
-        props = {k.decode() if isinstance(k, bytes) else k: (v.decode() if isinstance(v, bytes) else str(v)) for k, v in info.properties.items()}
+        props = {
+            k.decode() if isinstance(k, bytes) else k: (v.decode() if isinstance(v, bytes) else str(v))
+            for k, v in info.properties.items()
+        }
         display = props.get("name", service_name.split(".")[0].replace("-", " "))
         udp_port = int(props.get("udp", DEFAULT_UDP_PORT))
         entry = DiscoveredServer(
@@ -253,6 +283,7 @@ class ServerDiscovery:
         if not self._running:
             return
         self._running = False
+        self._on_update = None
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)

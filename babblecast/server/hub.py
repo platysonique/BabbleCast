@@ -14,6 +14,8 @@ from websockets.server import WebSocketServerProtocol
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT
 from babblecast.discovery import ServerAdvertiser
+from babblecast.network import local_ipv4_addresses
+from babblecast.server.auth import check_password, make_password_verifier
 from babblecast.protocol import (
     ErrorCode,
     MsgType,
@@ -84,12 +86,17 @@ class BabbleCastHub:
         udp_port: int = DEFAULT_UDP_PORT,
         server_name: str = "BabbleCast",
         advertise: bool = True,
+        server_password: str = "",
     ) -> None:
         self.host = host
         self.ws_port = ws_port
         self.udp_port = udp_port
         self.server_name = server_name
         self.advertise = advertise
+        self._password_salt = ""
+        self._password_digest = ""
+        if server_password.strip():
+            self._password_salt, self._password_digest = make_password_verifier(server_password.strip())
         self._clients: dict[str, ClientState] = {}
         self._rooms: dict[str, Room] = {}
         self._tap_sessions: dict[str, TapSession] = {}
@@ -98,6 +105,10 @@ class BabbleCastHub:
         self._advertiser: ServerAdvertiser | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._join_lock = asyncio.Lock()
+
+    @property
+    def password_protected(self) -> bool:
+        return bool(self._password_digest)
 
     def _default_room(self) -> Room:
         for room in self._rooms.values():
@@ -481,6 +492,28 @@ class BabbleCastHub:
             if hello.get("type") != MsgType.HELLO.value:
                 await ws.close(1008, "expected hello")
                 return
+            if self._password_digest:
+                supplied = str(hello.get("password", ""))
+                if not supplied:
+                    await client.ws.send(
+                        encode_msg(
+                            MsgType.ERROR,
+                            message="Password required",
+                            error_code=ErrorCode.PASSWORD_REQUIRED.value,
+                        )
+                    )
+                    await ws.close(1008, "password required")
+                    return
+                if not check_password(supplied, self._password_salt, self._password_digest):
+                    await client.ws.send(
+                        encode_msg(
+                            MsgType.ERROR,
+                            message="Incorrect password",
+                            error_code=ErrorCode.PASSWORD_WRONG.value,
+                        )
+                    )
+                    await ws.close(1008, "wrong password")
+                    return
             name = clamp_name(str(hello.get("name", "Anonymous")))
             async with self._join_lock:
                 if self._display_name_taken(name):
@@ -581,14 +614,16 @@ class BabbleCastHub:
         )
         self._udp_transport = transport
         if self.advertise:
-            adv_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.connect(("8.8.8.8", 80))
-                    adv_host = s.getsockname()[0]
-            except OSError:
-                pass
-            self._advertiser = ServerAdvertiser(self.server_name, self.ws_port, self.udp_port, adv_host)
+            adv_hosts = local_ipv4_addresses()
+            if self.host not in ("0.0.0.0", "127.0.0.1") and self.host not in adv_hosts:
+                adv_hosts.insert(0, self.host)
+            self._advertiser = ServerAdvertiser(
+                self.server_name,
+                self.ws_port,
+                self.udp_port,
+                adv_hosts,
+                password_protected=self.password_protected,
+            )
             self._advertiser.start()
         logger.info("BabbleCast hub listening ws=%s udp=%s", self.ws_port, self.udp_port)
 
@@ -618,6 +653,13 @@ def run_server(
     ws_port: int = DEFAULT_WS_PORT,
     udp_port: int = DEFAULT_UDP_PORT,
     server_name: str = "BabbleCast",
+    server_password: str = "",
 ) -> None:
-    hub = BabbleCastHub(host=host, ws_port=ws_port, udp_port=udp_port, server_name=server_name)
+    hub = BabbleCastHub(
+        host=host,
+        ws_port=ws_port,
+        udp_port=udp_port,
+        server_name=server_name,
+        server_password=server_password,
+    )
     asyncio.run(hub.run_forever())

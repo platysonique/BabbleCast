@@ -24,8 +24,13 @@ class ServerLinkWidget(QWidget):
         self._mic_btn.setCheckable(True)
         self._mic_btn.setToolTip("Mute your mic to this server only")
         self._mic_btn.setFixedWidth(36)
-        self._close_btn = QPushButton("Disconnect")
+        self._close_btn = QPushButton("✕")
         self._close_btn.setToolTip("Disconnect from this server")
+        self._close_btn.setFixedWidth(28)
+        self._close_btn.setStyleSheet(
+            "QPushButton { color: #f7768e; font-weight: 700; font-size: 14px; border: none; }"
+            "QPushButton:hover { color: #ff9eaa; }"
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)

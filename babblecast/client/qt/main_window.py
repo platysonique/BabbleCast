@@ -28,7 +28,11 @@ from PyQt6.QtWidgets import (
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
 from babblecast.client.bridge import BridgeManager
-from babblecast.client.qt.credentials_dialog import ConnectCredentialsDialog, HostCredentialsDialog
+from babblecast.client.qt.credentials_dialog import (
+    ConnectCredentialsDialog,
+    DisconnectConfirmDialog,
+    HostCredentialsDialog,
+)
 from babblecast.client.qt.detail_drawer import DetailDrawer
 from babblecast.client.qt.participant_widget import ParticipantWidget
 from babblecast.client.qt.server_link_widget import ServerLinkWidget
@@ -44,7 +48,8 @@ from babblecast.client.room_controller import (
     resolve_room,
     should_disconnect_failed_connect,
 )
-from babblecast.protocol import is_name_taken_error
+from babblecast.network import is_local_host
+from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import get_tap_store
 
@@ -78,7 +83,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 680)
         self.setStyleSheet(STYLESHEET)
         self._settings = get_settings()
-        self._ui = _UiSignals()
+        self._closing = False
+        self._ui = _UiSignals(self)
         self._ui.servers_found.connect(self._on_servers_discovered)
         self._ui.link_connected.connect(self._on_link_connected)
         self._ui.link_disconnected.connect(self._on_link_disconnected)
@@ -129,6 +135,7 @@ class MainWindow(QMainWindow):
         self._pending_embedded_connect = False
         self._embedded_host: str = "127.0.0.1"
         self._embedded_port: int = 8765
+        self._own_server_password: str = ""
 
         self._build_ui()
         self._load_devices()
@@ -288,6 +295,8 @@ class MainWindow(QMainWindow):
         self._drawer.populate_devices(self._input_devices, self._output_devices, sel_in, sel_out)
 
     def _on_local_mic_level(self, level: float) -> None:
+        if self._closing:
+            return
         self._drawer.set_local_mic_level(level)
 
     def _on_panel_expanded_changed(self, expanded: bool) -> None:
@@ -309,7 +318,7 @@ class MainWindow(QMainWindow):
         self._server_list.clear()
         for s in servers:
             item = QListWidgetItem(s.label)
-            item.setData(Qt.ItemDataRole.UserRole, (s.host, s.ws_port))
+            item.setData(Qt.ItemDataRole.UserRole, (s.host, s.ws_port, s))
             self._server_list.addItem(item)
 
     def _already_connected(self, host: str, port: int) -> bool:
@@ -318,34 +327,68 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def _find_discovered(self, host: str, port: int) -> DiscoveredServer | None:
+        for s in self._servers:
+            if s.host == host and s.ws_port == port:
+                return s
+        return None
+
+    def _is_own_server(self, host: str, port: int) -> bool:
+        if not self._embedded or not self._embedded.running:
+            return False
+        if port != self._embedded.ws_port:
+            return False
+        return is_local_host(host)
+
     def _connect_selected_server(self) -> None:
         item = self._server_list.currentItem()
         if item:
-            host, port = item.data(Qt.ItemDataRole.UserRole)
-            self._connect(host, port, label=item.text())
+            host, port, discovered = item.data(Qt.ItemDataRole.UserRole)
+            label = discovered.label if discovered else item.text()
+            password_required = bool(discovered and discovered.password_required)
+            self._connect(host, port, label=label, password_required=password_required)
 
-    def _connect(self, host: str, port: int, label: str | None = None) -> None:
+    def _connect(
+        self,
+        host: str,
+        port: int,
+        label: str | None = None,
+        *,
+        password: str = "",
+        password_required: bool = False,
+        skip_name_prompt: bool = False,
+    ) -> None:
         if self._already_connected(host, port):
             self._status.setText(f"Already connected to {host}:{port}")
             return
         server_label = label or f"{host}:{port}"
-        dlg = ConnectCredentialsDialog(
-            self._settings.display_name or socket.gethostname(),
-            server_label,
-            self,
-        )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._settings.display_name = dlg.display_name
-        save_settings(self._settings)
+        own = self._is_own_server(host, port)
+        if own and not password:
+            password = self._own_server_password
+        if not skip_name_prompt and not own:
+            discovered = self._find_discovered(host, port)
+            if discovered and discovered.password_required:
+                password_required = True
+            dlg = ConnectCredentialsDialog(
+                self._settings.display_name or socket.gethostname(),
+                server_label,
+                self,
+                password_required=password_required,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            self._settings.display_name = dlg.display_name
+            password = dlg.password or password
+            save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self._status.setText(f"Connecting to {host}:{port}…")
-        self._bridge.connect(host, port, label=label)
+        self._bridge.connect(host, port, label=label, password=password)
 
     def _toggle_host(self) -> None:
         if self._embedded and self._embedded.running:
             self._embedded.stop()
             self._embedded = None
+            self._own_server_password = ""
             self._host_server_btn.setText("Host Server")
             self._status.setText("Server stopped")
             return
@@ -364,6 +407,7 @@ class MainWindow(QMainWindow):
         name = dlg.server_name
         self._settings.hosted_server_name = name
         self._settings.display_name = dlg.display_name
+        self._own_server_password = dlg.server_password
         save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self._pending_embedded_connect = True
@@ -380,6 +424,7 @@ class MainWindow(QMainWindow):
 
         self._embedded = EmbeddedServer(
             server_name=name,
+            server_password=self._own_server_password,
             on_started=_on_started,
             on_failed=_on_failed,
             on_stopped=_on_stopped,
@@ -394,7 +439,12 @@ class MainWindow(QMainWindow):
         if self._pending_embedded_connect and self._embedded and self._embedded.running:
             self._pending_embedded_connect = False
             if not self._already_connected(host, port):
-                self._connect(host, port)
+                self._connect(
+                    host,
+                    port,
+                    password=self._own_server_password,
+                    skip_name_prompt=True,
+                )
             else:
                 self._status.setText(f"Hosting on {host}:{port} — already connected")
 
@@ -479,6 +529,12 @@ class MainWindow(QMainWindow):
                 "Name taken",
                 f"“{self._settings.display_name}” is already on {label}.\n\n"
                 "Pick another display name when you connect (e.g. Cam A, Director 2).",
+            )
+        elif is_password_error(code, message):
+            QMessageBox.warning(
+                self,
+                "Password required",
+                f"{label}: {message}\n\nDisconnect and connect again with the correct password.",
             )
         else:
             QMessageBox.warning(self, "BabbleCast", f"{label}: {message}")
@@ -575,6 +631,16 @@ class MainWindow(QMainWindow):
             w._mic_btn.setText("🎤✕" if muted else "🎤")
 
     def _disconnect_link(self, link_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        if not link:
+            return
+        if not self._settings.skip_disconnect_confirm:
+            dlg = DisconnectConfirmDialog(link.label, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dlg.skip_future_confirms:
+                self._settings.skip_disconnect_confirm = True
+                save_settings(self._settings)
         self._bridge.disconnect(link_id)
 
     def _on_presence(self, link_id: str, _room_id: str, participants: list[dict]) -> None:
@@ -868,11 +934,18 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._closing = True
         geo = self.geometry()
         self._settings.window_geometry = [geo.x(), geo.y(), geo.width(), geo.height()]
         save_settings(self._settings)
+        for dlg in list(self._tap_dialogs.values()):
+            dlg.close()
+        self._tap_dialogs.clear()
+        self._ui.blockSignals(True)
         self._discovery.stop()
-        self._bridge.disconnect_all()
-        if self._embedded and self._embedded.running:
-            self._embedded.stop()
+        if self._embedded:
+            if self._embedded.running:
+                self._embedded.stop()
+            self._embedded = None
+        self._bridge.shutdown()
         super().closeEvent(event)

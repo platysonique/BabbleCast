@@ -209,6 +209,36 @@ async def test_display_name_released_after_disconnect() -> None:
         await hub.stop()
 
 
+@pytest.mark.asyncio
+async def test_password_protected_server() -> None:
+    hub = BabbleCastHub(
+        host="127.0.0.1",
+        ws_port=18777,
+        udp_port=18778,
+        advertise=False,
+        server_password="secret",
+    )
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18777") as ws:
+            await ws.send(encode_msg(MsgType.HELLO, name="Guest"))
+            err = decode_msg(await asyncio.wait_for(ws.recv(), timeout=2))
+            assert err["type"] == MsgType.ERROR.value
+            assert err.get("error_code") == "password_required"
+
+        async with websockets.connect("ws://127.0.0.1:18777") as ws:
+            await ws.send(encode_msg(MsgType.HELLO, name="Guest", password="nope"))
+            err = decode_msg(await asyncio.wait_for(ws.recv(), timeout=2))
+            assert err.get("error_code") == "password_wrong"
+
+        async with websockets.connect("ws://127.0.0.1:18777") as ws:
+            await ws.send(encode_msg(MsgType.HELLO, name="Guest", password="secret"))
+            welcome = decode_msg(await asyncio.wait_for(ws.recv(), timeout=2))
+            assert welcome["type"] == MsgType.WELCOME.value
+    finally:
+        await hub.stop()
+
+
 def test_udp_source_must_match_registered_addr() -> None:
     hub = BabbleCastHub(advertise=False)
     client = ClientState(ws=None, client_id="c1", name="A")  # type: ignore[arg-type]

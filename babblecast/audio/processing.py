@@ -129,6 +129,8 @@ class NoiseSuppressor:
             if len(self._profile) < FRAME_SAMPLES:
                 return self._fallback(samples)
         prop = 0.15 + self.strength * 0.85
+        if len(float_samples) < 1024:
+            return self._fallback(samples)
         try:
             reduced = self._nr.reduce_noise(
                 y=float_samples,

@@ -1,6 +1,7 @@
 """Shared constants for BabbleCast protocol and audio."""
 
 SERVICE_TYPE = "_babblecast._tcp.local."
+LOCAL_DOMAIN = "babblecast.local"
 DEFAULT_WS_PORT = 8765
 DEFAULT_UDP_PORT = 8766
 SAMPLE_RATE = 48000

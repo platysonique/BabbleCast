@@ -37,6 +37,7 @@ class UserSettings:
     window_geometry: list[int] | None = None
     ui_panel_expanded: bool = False
     ui_self_audio_expanded: bool = False
+    skip_disconnect_confirm: bool = False
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -62,6 +63,7 @@ class UserSettings:
                 window_geometry=raw.get("window_geometry"),
                 ui_panel_expanded=bool(raw.get("ui_panel_expanded", False)),
                 ui_self_audio_expanded=bool(raw.get("ui_self_audio_expanded", False)),
+                skip_disconnect_confirm=bool(raw.get("skip_disconnect_confirm", False)),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

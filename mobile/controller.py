@@ -20,7 +20,8 @@ from babblecast.client.room_controller import (
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
-from babblecast.protocol import is_name_taken_error
+from babblecast.network import is_local_host
+from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
 from mobile.android_network import acquire_multicast_lock, release_multicast_lock
@@ -81,13 +82,14 @@ class BabbleController:
         self._pending_port: int | None = None
         self._room_by_link: dict[str, tuple[str, str]] = {}
         self._pending_embedded_connect = False
+        self._own_server_password = ""
         self.current_room_text = "In room: —"
         self.status_text = "Offline — connect to one or more servers"
         self.chat_text = ""
         self.is_muted = False
         self.ptt_active = False
         self._participant_by_composite: dict[str, dict] = {}
-        Clock.schedule_interval(self._tick_ui, 0.08)
+        self._tick_ev = Clock.schedule_interval(self._tick_ui, 0.08)
 
     @property
     def settings(self):
@@ -113,12 +115,16 @@ class BabbleController:
             )
 
     def stop_all(self) -> None:
+        if self._tick_ev is not None:
+            Clock.unschedule(self._tick_ev)
+            self._tick_ev = None
         self._discovery.stop()
         release_multicast_lock()
-        self._bridge.disconnect_all()
-        stop_voice_foreground()
         if self._embedded and self._embedded.running:
             self._embedded.stop()
+            self._embedded = None
+        self._bridge.shutdown()
+        stop_voice_foreground()
 
     def _apply_servers(self, servers) -> None:
         screen = self.app.screen("connect")
@@ -128,7 +134,16 @@ class BabbleController:
         elif location_granted():
             screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
 
-    def connect_to(self, host: str, port: int, display_name: str | None = None) -> None:
+    def connect_to(
+        self,
+        host: str,
+        port: int,
+        display_name: str | None = None,
+        *,
+        password: str = "",
+        password_required: bool = False,
+        skip_name_prompt: bool = False,
+    ) -> None:
         host = host.strip()
         if not host:
             self.set_status("Enter a server IP or hostname")
@@ -140,12 +155,47 @@ class BabbleController:
             return
         self._pending_host = host
         self._pending_port = port
-        if display_name:
-            self.connect_selected(display_name, host=host, port=port)
+        own = self._is_own_server(host, port)
+        if own and not password:
+            password = self._own_server_password
+        if display_name and (skip_name_prompt or own):
+            self.connect_selected(display_name, host=host, port=port, password=password)
+            return
+        if skip_name_prompt or own:
+            name = self._settings.display_name or ""
+            if name:
+                self.connect_selected(name, host=host, port=port, password=password)
+                return
+        from mobile.credentials_dialog import prompt_connect
+
+        prompt_connect(
+            host,
+            port,
+            f"{host}:{port}",
+            lambda name, pwd: self.connect_selected(name, host=host, port=port, password=pwd),
+            password_required=password_required,
+        )
+
+    def connect_discovered(self, host: str, port: int, label: str, *, password_required: bool) -> None:
+        own = self._is_own_server(host, port)
+        if own:
+            self.connect_to(
+                host,
+                port,
+                self._settings.display_name,
+                password=self._own_server_password,
+                skip_name_prompt=True,
+            )
             return
         from mobile.credentials_dialog import prompt_connect
 
-        prompt_connect(host, port, f"{host}:{port}", lambda name: self.connect_selected(name, host=host, port=port))
+        prompt_connect(
+            host,
+            port,
+            label,
+            lambda name, pwd: self.connect_selected(name, host=host, port=port, password=pwd),
+            password_required=password_required,
+        )
 
     def connect_selected(
         self,
@@ -153,6 +203,7 @@ class BabbleController:
         *,
         host: str | None = None,
         port: int | None = None,
+        password: str = "",
     ) -> None:
         host = (host or self._pending_host or self._settings.last_server_host or "").strip()
         port = port or self._pending_port or self._settings.last_server_port or 8765
@@ -169,7 +220,7 @@ class BabbleController:
         save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self.set_status(f"Connecting {host}:{port}…")
-        self._bridge.connect(host, port)
+        self._bridge.connect(host, port, password=password)
         self._sync_input_monitoring()
         self.app.switch_tab("live")
 
@@ -179,16 +230,18 @@ class BabbleController:
             return
         from mobile.credentials_dialog import prompt_host
 
-        prompt_host(lambda server, name: self._start_host_with_name(server, name))
+        prompt_host(lambda server, name, pwd: self._start_host_with_name(server, name, pwd))
 
-    def _start_host_with_name(self, server_name: str, display_name: str) -> None:
+    def _start_host_with_name(self, server_name: str, display_name: str, password: str = "") -> None:
         self._settings.display_name = display_name
+        self._own_server_password = password
         self._start_host(server_name)
 
     def stop_hosting(self) -> None:
         if self._embedded and self._embedded.running:
             self._embedded.stop()
             self._embedded = None
+            self._own_server_password = ""
             self.set_status("Server stopped")
         self.refresh_host_ui()
 
@@ -235,6 +288,8 @@ class BabbleController:
             live.detail_panel.set_self_mic_level(level)
 
     def _tick_ui(self, _dt: float) -> bool:
+        if self._bridge.shutting_down:
+            return False
         live = self.app.screen("live")
         panel = getattr(live, "detail_panel", None) if live else None
         if panel and panel._peer_key and panel._peer_open:
@@ -295,6 +350,7 @@ class BabbleController:
 
         self._embedded = EmbeddedServer(
             server_name=clean,
+            server_password=self._own_server_password,
             on_started=on_started,
             on_failed=on_failed,
             on_stopped=on_stopped,
@@ -311,7 +367,13 @@ class BabbleController:
                 l.host == host and l.port == port and l.connected for l in self._bridge.links
             )
             if not already:
-                self.connect_to(host, port, screen.display_name)
+                self.connect_to(
+                    host,
+                    port,
+                    self._settings.display_name,
+                    password=self._own_server_password,
+                    skip_name_prompt=True,
+                )
             else:
                 self.set_status(f"Hosting on {host}:{port} — already connected")
 
@@ -332,6 +394,13 @@ class BabbleController:
             self._embedded = None
         self.refresh_host_ui()
 
+    def _is_own_server(self, host: str, port: int) -> bool:
+        if not self._embedded or not self._embedded.running:
+            return False
+        if port != self._embedded.ws_port:
+            return False
+        return is_local_host(host)
+
     def _join_local_host(self) -> None:
         """Legacy — host connect is driven by EmbeddedServer.on_started."""
         screen = self.app.screen("connect")
@@ -346,6 +415,8 @@ class BabbleController:
             screen = self.app.screen("connect")
             if hasattr(screen, "_name_field"):
                 screen._name_field.focus = True
+        elif is_password_error(error_code, message):
+            self.set_status(f"{label}: {message} — reconnect with the correct password")
         else:
             self.set_status(f"{label}: {message}")
         if link and should_disconnect_failed_connect(error_code, message, connected=link.connected):
@@ -470,9 +541,23 @@ class BabbleController:
 
     def disconnect_link(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
-        label = link.label if link else link_id
-        self._bridge.disconnect(link_id)
-        self.set_status(f"Disconnected from {label}")
+        if not link:
+            return
+        label = link.label
+
+        def do_disconnect(skip_future: bool) -> None:
+            if skip_future:
+                self._settings.skip_disconnect_confirm = True
+                save_settings(self._settings)
+            self._bridge.disconnect(link_id)
+            self.set_status(f"Disconnected from {label}")
+
+        if self._settings.skip_disconnect_confirm:
+            do_disconnect(False)
+            return
+        from mobile.credentials_dialog import prompt_disconnect
+
+        prompt_disconnect(label, do_disconnect)
 
     def toggle_mute(self) -> None:
         self.is_muted = not self.is_muted

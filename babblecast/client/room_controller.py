@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from babblecast.protocol import is_name_taken_error
+from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.room_chat import ChatLine, get_room_chat_store
 
 
@@ -61,4 +61,4 @@ def should_disconnect_failed_connect(
     *,
     connected: bool,
 ) -> bool:
-    return not connected and is_name_taken_error(error_code, message)
+    return not connected and (is_name_taken_error(error_code, message) or is_password_error(error_code, message))

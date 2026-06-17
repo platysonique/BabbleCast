@@ -19,6 +19,7 @@ class EmbeddedServer:
         ws_port: int = DEFAULT_WS_PORT,
         udp_port: int = DEFAULT_UDP_PORT,
         server_name: str = "BabbleCast",
+        server_password: str = "",
         on_started: Callable[[str, int], None] | None = None,
         on_failed: Callable[[str], None] | None = None,
         on_stopped: Callable[[], None] | None = None,
@@ -26,6 +27,7 @@ class EmbeddedServer:
         self._ws_port = ws_port
         self._udp_port = udp_port
         self._server_name = server_name
+        self._server_password = server_password
         self._on_started = on_started
         self._on_failed = on_failed
         self._on_stopped = on_stopped
@@ -54,6 +56,7 @@ class EmbeddedServer:
             ws_port=self._ws_port,
             udp_port=self._udp_port,
             server_name=self._server_name,
+            server_password=self._server_password,
             advertise=True,
         )
         try:
@@ -87,6 +90,9 @@ class EmbeddedServer:
     def stop(self) -> None:
         if not self._thread:
             return
+        self._on_started = None
+        self._on_failed = None
+        self._on_stopped = None
         if self._loop and self._running:
             def _request_stop() -> None:
                 self._loop.stop()

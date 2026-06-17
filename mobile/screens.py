@@ -148,19 +148,26 @@ class ConnectScreen(MDScreen):
             card.add_widget(MDLabel(text=s.label, theme_text_color="Custom", text_color=TEXT, font_style="Subtitle1"))
             card.add_widget(
                 MDLabel(
-                    text=f"{s.host}:{s.ws_port}",
+                    text=f"{s.hostname or s.host}:{s.ws_port}",
                     theme_text_color="Custom",
                     text_color=MUTED,
                     font_style="Caption",
                 )
             )
-            card.bind(on_release=lambda _c, h=s.host, p=s.ws_port, n=s.name: self._connect_server(h, p, n))
+            card.bind(
+                on_release=lambda _c, srv=s: self._connect_server(srv),
+            )
             self._server_box.add_widget(card)
 
-    def _connect_server(self, host: str, port: int, _name: str) -> None:
+    def _connect_server(self, server) -> None:
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
-        app.controller.connect_to(host, port)
+        app.controller.connect_discovered(
+            server.host,
+            server.ws_port,
+            server.label,
+            password_required=server.password_required,
+        )
 
 
 class PersonNameRow(MDBoxLayout):
@@ -457,7 +464,12 @@ class LiveScreen(MDScreen):
             icon="microphone-off" if link.mic_muted else "microphone",
             on_release=lambda *_: self._mic(link_id),
         )
-        disc = MDIconButton(icon="link-off", on_release=lambda *_: self._disconnect(link_id))
+        disc = MDIconButton(
+            icon="close",
+            theme_text_color="Custom",
+            text_color=(0.97, 0.46, 0.56, 1),
+            on_release=lambda *_: self._disconnect(link_id),
+        )
         row.add_widget(card)
         row.add_widget(listen)
         row.add_widget(mic)

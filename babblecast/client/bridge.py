@@ -79,6 +79,36 @@ class BridgeManager:
         self._global_muted = False
         self._global_ptt = False
         self._monitoring_requested = False
+        self._shutting_down = False
+
+    @property
+    def shutting_down(self) -> bool:
+        return self._shutting_down
+
+    def shutdown(self) -> None:
+        """Stop audio and clear UI callbacks — safe to call from closeEvent."""
+        self._shutting_down = True
+        self._monitoring_requested = False
+        self._on_link_connected = None
+        self._on_link_disconnected = None
+        self._on_presence = None
+        self._on_chat = None
+        self._on_rooms = None
+        self._on_joined = None
+        self._on_room_deleted = None
+        self._on_error = None
+        self._on_tap_received = None
+        self._on_tap_chat = None
+        self._on_tap_open = None
+        self._on_tap_end = None
+        self._on_local_mic_level = None
+        for link_id in list(self._sessions.keys()):
+            session = self._sessions.pop(link_id, None)
+            if session:
+                session.disconnect(notify=False)
+        with self._lock:
+            self._links.clear()
+        self._teardown_audio()
 
     @property
     def links(self) -> list[ServerLinkState]:
@@ -93,8 +123,8 @@ class BridgeManager:
 
     def _ensure_audio(self) -> bool:
         """Start shared mic/speaker. Returns False if hardware could not open."""
-        if self._audio_started:
-            return True
+        if self._shutting_down or self._audio_started:
+            return self._audio_started
         self._mic = create_mic(
             device_key=self._settings.input_device,
             gate=self._gate,
@@ -130,6 +160,13 @@ class BridgeManager:
             self._speaker = None
         self._audio_started = False
 
+    def disconnect_all(self) -> None:
+        if self._shutting_down:
+            return
+        for link_id in list(self._sessions.keys()):
+            self.disconnect(link_id)
+        self._stop_audio_if_idle()
+
     def _stop_audio_if_idle(self) -> None:
         if self._sessions or self._monitoring_requested:
             return
@@ -146,6 +183,8 @@ class BridgeManager:
             self._teardown_audio()
 
     def _on_mic_frame(self, pcm: bytes, _level: float) -> None:
+        if self._shutting_down:
+            return
         for link_id, session in list(self._sessions.items()):
             link = self._links.get(link_id)
             if (
@@ -157,15 +196,20 @@ class BridgeManager:
                 session.send_voice_pcm(bytes(pcm))
 
     def _on_mic_level(self, level: float) -> None:
+        if self._shutting_down:
+            return
         self._local_mic_level = level
         if self._on_local_mic_level:
-            self._on_local_mic_level(level)
+            try:
+                self._on_local_mic_level(level)
+            except RuntimeError:
+                pass
         for link_id, session in list(self._sessions.items()):
             link = self._links.get(link_id)
             if link and not link.mic_muted and session.connected:
                 session.send_voice_level(level)
 
-    def connect(self, host: str, port: int = 8765, label: str | None = None) -> str:
+    def connect(self, host: str, port: int = 8765, label: str | None = None, password: str = "") -> str:
         link_id = new_id()
         display = label or f"{host}:{port}"
         state = ServerLinkState(link_id=link_id, label=display, host=host, port=port)
@@ -198,7 +242,9 @@ class BridgeManager:
             on_tap_chat=lambda d, lid=link_id: self._on_tap_chat and self._on_tap_chat(lid, d),
             on_tap_open=lambda tid, lid=link_id: self._handle_tap_open(lid, tid),
             on_tap_end=lambda tid, lid=link_id: self._handle_tap_end(lid, tid),
-            listen_muted_getter=lambda lid=link_id: self._links[lid].listen_muted,
+            listen_muted_getter=lambda lid=link_id: (
+                self._links[lid].listen_muted if lid in self._links else True
+            ),
         )
         self._sessions[link_id] = session
         if not self._ensure_audio():
@@ -209,7 +255,7 @@ class BridgeManager:
                     None,
                 )
         session.update_settings(self._settings)
-        session.connect(host, port)
+        session.connect(host, port, password=password)
         return link_id
 
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
@@ -248,10 +294,6 @@ class BridgeManager:
         with self._lock:
             self._links.pop(link_id, None)
         self._stop_audio_if_idle()
-
-    def disconnect_all(self) -> None:
-        for link_id in list(self._sessions.keys()):
-            self.disconnect(link_id)
 
     def set_listen_muted(self, link_id: str, muted: bool) -> None:
         link = self._links.get(link_id)
