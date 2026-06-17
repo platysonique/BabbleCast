@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
+from babblecast.constants import MAX_NAME_LEN
 from babblecast.client.bridge import BridgeManager
 from babblecast.client.qt.participant_widget import ParticipantWidget
 from babblecast.client.qt.server_link_widget import ServerLinkWidget
@@ -86,7 +88,7 @@ class MainWindow(QMainWindow):
             on_tap_open=lambda lid, tid: self._ui.tap_open.emit(lid, tid),
             on_tap_end=lambda lid, tid: self._ui.tap_end.emit(lid, tid),
         )
-        self._embedded = EmbeddedServer(server_name=socket.gethostname())
+        self._embedded: EmbeddedServer | None = None
         self._discovery = ServerDiscovery(on_update=lambda s: self._ui.servers_found.emit(s))
         self._participant_widgets: dict[str, ParticipantWidget] = {}
         self._link_widgets: dict[str, ServerLinkWidget] = {}
@@ -327,17 +329,40 @@ class MainWindow(QMainWindow):
         self._bridge.connect(host, port)
 
     def _toggle_host(self) -> None:
-        if self._embedded.running:
+        if self._embedded and self._embedded.running:
             self._embedded.stop()
+            self._embedded = None
             self._host_server_btn.setText("Host Server")
             self._status.setText("Server stopped")
-        else:
-            self._embedded.start()
-            self._host_server_btn.setText("Stop Server")
-            QTimer.singleShot(500, self._auto_connect_local)
+            return
+        default = (
+            self._settings.hosted_server_name
+            or self._name_edit.text().strip()
+            or socket.gethostname()
+        )
+        name, ok = QInputDialog.getText(
+            self,
+            "Name your server",
+            "This name appears in Discover for others on your network:",
+            text=default,
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "BabbleCast", "Server name cannot be empty.")
+            return
+        name = name[:MAX_NAME_LEN]
+        self._settings.hosted_server_name = name
+        save_settings(self._settings)
+        self._embedded = EmbeddedServer(server_name=name)
+        self._embedded.start()
+        self._host_server_btn.setText("Stop Server")
+        self._status.setText(f"Hosting as “{name}”…")
+        QTimer.singleShot(500, self._auto_connect_local)
 
     def _auto_connect_local(self) -> None:
-        if self._embedded.running:
+        if self._embedded and self._embedded.running:
             self._connect(self._embedded.host, self._embedded.ws_port)
 
     def _add_link_widget(self, link_id: str) -> None:
@@ -617,5 +642,6 @@ class MainWindow(QMainWindow):
         save_settings(self._settings)
         self._discovery.stop()
         self._bridge.disconnect_all()
-        self._embedded.stop()
+        if self._embedded and self._embedded.running:
+            self._embedded.stop()
         super().closeEvent(event)

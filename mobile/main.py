@@ -202,9 +202,54 @@ class BabbleMobileScreen(MDScreen):
         if self._embedded and self._embedded.running:
             self.status_text = "Server already running — use Connect to join it"
             return
-        self._embedded = EmbeddedServer()
+        self._prompt_host_server_name()
+
+    def _prompt_host_server_name(self) -> None:
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+        from kivymd.uix.dialog import MDDialog
+        from kivymd.uix.textfield import MDTextField
+
+        default = self._settings.hosted_server_name or self.display_name or "My Server"
+        field = MDTextField(
+            hint_text="Server name",
+            text=default,
+            size_hint_y=None,
+            height="48dp",
+        )
+
+        def cancel(dlg: MDDialog, *_args) -> None:
+            dlg.dismiss()
+
+        def start(dlg: MDDialog, *_args) -> None:
+            name = field.text.strip()
+            if not name:
+                self.status_text = "Enter a server name to host"
+                return
+            dlg.dismiss()
+            self._start_host(name)
+
+        dialog = MDDialog(
+            title="Name your server",
+            text="This is how others will see you in Discover.",
+            type="custom",
+            content_cls=field,
+            buttons=[
+                MDFlatButton(text="Cancel", on_release=lambda *_: cancel(dialog)),
+                MDRaisedButton(text="Start", on_release=lambda *_: start(dialog)),
+            ],
+        )
+        field.bind(on_text_validate=lambda *_: start(dialog))
+        dialog.open()
+
+    def _start_host(self, name: str) -> None:
+        from babblecast.constants import MAX_NAME_LEN
+
+        clean = name.strip()[:MAX_NAME_LEN]
+        self._settings.hosted_server_name = clean
+        save_settings(self._settings)
+        self._embedded = EmbeddedServer(server_name=clean)
         self._embedded.start()
-        self.status_text = "Hosting on this device…"
+        self.status_text = f"Hosting as “{clean}”…"
         threading.Timer(0.8, lambda: Clock.schedule_once(lambda _dt: self._join_local_host())).start()
 
     def _join_local_host(self):
