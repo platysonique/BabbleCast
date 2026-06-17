@@ -8,26 +8,56 @@ python3 -m venv "$VENV"
 "$VENV/bin/pip" install -U pip wheel
 "$VENV/bin/pip" install -e "$ROOT[dev]"
 
-INSTALL_DIR="${HOME}/.local/bin"
-mkdir -p "$INSTALL_DIR"
-cat > "${INSTALL_DIR}/bbc" <<EOF
+WRAPPER="$(mktemp)"
+cat > "${WRAPPER}" <<EOF
 #!/usr/bin/env bash
 exec "${VENV}/bin/bbc" "\$@"
 EOF
-chmod +x "${INSTALL_DIR}/bbc"
+chmod +x "${WRAPPER}"
+
+BBC_PATH=""
+if sudo install -m 755 "${WRAPPER}" /usr/local/bin/bbc 2>/dev/null; then
+	BBC_PATH="/usr/local/bin/bbc"
+else
+	INSTALL_DIR="${HOME}/.local/bin"
+	mkdir -p "${INSTALL_DIR}"
+	install -m 755 "${WRAPPER}" "${INSTALL_DIR}/bbc"
+	BBC_PATH="${INSTALL_DIR}/bbc"
+
+	MARKER="# BabbleCast PATH"
+	if [[ -f "${HOME}/.profile" ]] && ! grep -qF "${MARKER}" "${HOME}/.profile"; then
+		cat >>"${HOME}/.profile" <<'EOF'
+
+# BabbleCast PATH
+if [ -d "$HOME/.local/bin" ]; then
+	PATH="$HOME/.local/bin:$PATH"
+fi
+EOF
+	fi
+	if [[ -f "${HOME}/.bashrc" ]] && ! grep -qF "${MARKER}" "${HOME}/.bashrc"; then
+		cat >>"${HOME}/.bashrc" <<'EOF'
+
+# BabbleCast PATH
+if [ -d "$HOME/.local/bin" ]; then
+	PATH="$HOME/.local/bin:$PATH"
+fi
+EOF
+	fi
+fi
+rm -f "${WRAPPER}"
 
 DESKTOP_DIR="${HOME}/.local/share/applications"
-mkdir -p "$DESKTOP_DIR"
+mkdir -p "${DESKTOP_DIR}"
 cat > "${DESKTOP_DIR}/babblecast.desktop" <<EOF
 [Desktop Entry]
 Name=BabbleCast
 Comment=Team live communication hub
-Exec=${INSTALL_DIR}/bbc
+Exec=${BBC_PATH}
 Icon=audio-input-microphone
 Terminal=false
 Type=Application
 Categories=Network;Chat;
 EOF
 
-echo "BabbleCast installed. Run: bbc"
-echo "Ensure ~/.local/bin is in your PATH."
+echo "BabbleCast installed: ${BBC_PATH}"
+echo "Run: bbc"
