@@ -56,6 +56,26 @@ Goon Squad parallel audit of `mobile/` + Android audio paths. Fixes applied in c
 | 20 | Credential dialog silent validation failures | Inline error labels on connect/host dialogs |
 | 21 | Force-stop / swipe-away skips cleanup | `on_pause` + `isFinishing()` → `stop_all`; service is non-sticky (`onTaskRemoved` stops self) |
 
+## Codebase gatherer extras — FIXED
+
+| # | Issue | Fix |
+|---|--------|-----|
+| 8 | Name-taken error dead focus target | Re-opens `prompt_connect` with name field |
+| 9 | Tap dialog fragile layout | `MDBoxLayout` content with log + input |
+| 14 | Mic permission before self-audio panel | `record_audio_granted()` gate + permission request |
+| 16 | PTT icon stale | `ptt_active` binding + icon sync |
+| 18 | Detail panel reaches into `_bridge` | Controller wrappers `set_peer_*`, `send_peer_tap` |
+| 19 | Duplicate connected-link rows | Guard in `add_connected_link` |
+| 20 | Optional password on manual connect | Password field always shown; required only when `auth=1` |
+
+## User-requested parity (not just goon rows) — FIXED
+
+| Request | Fix |
+|---------|-----|
+| Android gate + suppression sliders (line 820) | Settings tab + detail panel both wire to `BridgeManager` |
+| LAN discovery wired PC ↔ Wi‑Fi phone (line 854) | `InterfaceChoice.All`, multi-IP resolve, `connect_host` hostname, `NEARBY_WIFI_DEVICES`, permission watch + multicast lock refresh |
+| Shutdown parity desktop → Android (line 905) | `bridge.shutdown()`, mic callback clear, activity finish teardown |
+
 ---
 
 ## Verification checklist (Android)
@@ -68,4 +88,5 @@ Goon Squad parallel audit of `mobile/` + Android audio paths. Fixes applied in c
 - [x] Active server card highlighted
 - [x] Tap chat opens dialog from peer drawer
 - [x] Back out of app — no crash in logcat
-- [ ] PC on LAN appears in Discover (same Wi‑Fi, Location granted)
+- [x] Gate + suppression sliders affect live mic path
+- [ ] PC on LAN appears in Discover — requires phone Location + same subnet (code path verified; router AP isolation can still block)

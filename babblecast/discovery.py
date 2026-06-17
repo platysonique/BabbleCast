@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
+from zeroconf import IPVersion, InterfaceChoice, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, LOCAL_DOMAIN, SERVICE_TYPE
 from babblecast.network import local_ipv4_addresses
@@ -52,6 +52,11 @@ class DiscoveredServer:
     @property
     def password_required(self) -> bool:
         return self.properties.get("auth", "0") == "1"
+
+    @property
+    def connect_host(self) -> str:
+        """Hostname or IP to use when opening a WebSocket (prefer mDNS name)."""
+        return self.hostname or self.host
 
 
 class ServerAdvertiser:
@@ -108,7 +113,7 @@ class ServerAdvertiser:
                     continue
             if not addresses:
                 addresses = [socket.inet_aton("127.0.0.1")]
-            zc = Zeroconf(ip_version=IPVersion.V4Only)
+            zc = Zeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.All)
             hostname = f"{self._slug}.{LOCAL_DOMAIN}."
             info = ServiceInfo(
                 SERVICE_TYPE,
@@ -186,7 +191,15 @@ class ServerDiscovery:
             self._on_update(self.servers)
 
     def _resolve(self, service_name: str, info: ServiceInfo) -> None:
-        host = socket.inet_ntoa(info.addresses[0]) if info.addresses else ""
+        host = ""
+        for addr in info.addresses or []:
+            candidate = socket.inet_ntoa(addr)
+            if candidate.startswith("127."):
+                continue
+            host = candidate
+            break
+        if not host and info.addresses:
+            host = socket.inet_ntoa(info.addresses[0])
         if not host:
             return
         props = {
@@ -245,7 +258,7 @@ class ServerDiscovery:
         zc: Zeroconf | None = None
         browser: ServiceBrowser | None = None
         try:
-            zc = Zeroconf(ip_version=IPVersion.V4Only)
+            zc = Zeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.All)
             browser = ServiceBrowser(zc, SERVICE_TYPE, handlers=[self._on_service])
             self._zc = zc
             self._browser = browser

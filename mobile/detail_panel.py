@@ -313,15 +313,15 @@ class SideDetailPanel(MDBoxLayout):
             return
         muted = self._listen_btn.icon == "volume-high"
         self._listen_btn.icon = "volume-off" if muted else "volume-high"
-        self._controller._bridge.set_participant_muted(self._peer_key, muted)
+        self._controller.set_peer_muted(self._peer_key, muted)
 
     def _vol_changed(self, value: float) -> None:
         if self._peer_key:
-            self._controller._bridge.set_participant_volume(self._peer_key, value / 100.0)
+            self._controller.set_peer_volume(self._peer_key, value / 100.0)
 
     def _tap(self) -> None:
         if self._peer_link_id and self._peer_client_id:
-            self._controller._bridge.send_tap(self._peer_link_id, self._peer_client_id)
+            self._controller.send_peer_tap(self._peer_link_id, self._peer_client_id)
 
     def _tap_chat(self) -> None:
         if self._peer_link_id and self._peer_client_id:

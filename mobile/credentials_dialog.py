@@ -61,7 +61,7 @@ def prompt_connect(
         height=dp(48),
     )
     password_field = MDTextField(
-        hint_text="Server password",
+        hint_text="Server password (optional)" if not password_required else "Server password",
         password=True,
         size_hint_y=None,
         height=dp(48),
@@ -72,8 +72,7 @@ def prompt_connect(
         MDTextField(text=f"{server_label}", readonly=True, size_hint_y=None, height=dp(44))
     )
     body.add_widget(name_field)
-    if password_required:
-        body.add_widget(password_field)
+    body.add_widget(password_field)
     body.add_widget(error_label)
     holder: list[MDDialog] = []
 
@@ -82,8 +81,8 @@ def prompt_connect(
 
     def accept(*_args) -> None:
         name = _clean_name(name_field.text)
-        pwd = password_field.text if password_required else ""
-        if password_required and not pwd.strip():
+        pwd = password_field.text if password_field.text.strip() else ""
+        if password_required and not pwd:
             _set_error(error_label, "Enter the server password.")
             return
         _set_error(error_label, "")

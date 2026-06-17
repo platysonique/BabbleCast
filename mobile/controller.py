@@ -26,7 +26,7 @@ from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
 from mobile.android_network import acquire_multicast_lock, release_multicast_lock
 from mobile.android_foreground import start_voice_foreground, stop_voice_foreground
-from mobile.permissions import location_granted, request_android_permissions
+from mobile.permissions import location_granted, record_audio_granted, request_android_permissions
 
 if TYPE_CHECKING:
     from mobile.app import BabbleCastMobileApp
@@ -93,6 +93,7 @@ class BabbleController:
         self.is_muted = False
         self.ptt_active = False
         self._participant_by_composite: dict[str, dict] = {}
+        self._discovery_watch = None
 
     def _alive(self) -> bool:
         return not self._closing and not self._bridge.shutting_down
@@ -121,9 +122,24 @@ class BabbleController:
             screen.set_discovery_status(
                 "Grant Location permission for auto-discover, or enter PC IP below"
             )
+        if self._discovery_watch is None:
+            self._discovery_watch = Clock.schedule_interval(self._watch_discovery_permissions, 2.0)
+
+    def _watch_discovery_permissions(self, _dt: float) -> None:
+        if not self._alive():
+            if self._discovery_watch is not None:
+                self._discovery_watch.cancel()
+                self._discovery_watch = None
+            return
+        if location_granted():
+            acquire_multicast_lock()
+            self._apply_servers(self._discovery.servers)
 
     def stop_all(self) -> None:
         self._closing = True
+        if self._discovery_watch is not None:
+            self._discovery_watch.cancel()
+            self._discovery_watch = None
         if self._tap_dialog:
             self._tap_dialog.dismiss()
             self._tap_dialog = None
@@ -153,9 +169,11 @@ class BabbleController:
             screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
 
     def _password_required_for(self, host: str, port: int) -> bool:
-        host = host.strip()
+        host = host.strip().lower()
         for server in self._discovery.servers:
-            if server.host == host and server.ws_port == port:
+            if server.ws_port != port:
+                continue
+            if server.host == host or server.connect_host.lower() == host:
                 return server.password_required
         return False
 
@@ -204,10 +222,15 @@ class BabbleController:
         )
 
     def connect_discovered(self, host: str, port: int, label: str, *, password_required: bool) -> None:
-        own = self._is_own_server(host, port)
+        connect_host = host
+        for server in self._discovery.servers:
+            if server.host == host and server.ws_port == port:
+                connect_host = server.connect_host
+                break
+        own = self._is_own_server(connect_host, port) or self._is_own_server(host, port)
         if own:
             self.connect_to(
-                host,
+                connect_host,
                 port,
                 self._settings.display_name,
                 password=self._own_server_password,
@@ -217,10 +240,10 @@ class BabbleController:
         from mobile.credentials_dialog import prompt_connect
 
         prompt_connect(
-            host,
+            connect_host,
             port,
             label,
-            lambda name, pwd: self.connect_selected(name, host=host, port=port, password=pwd),
+            lambda name, pwd: self.connect_selected(name, host=connect_host, port=port, password=pwd),
             password_required=password_required,
         )
 
@@ -302,10 +325,24 @@ class BabbleController:
         self._sync_input_monitoring()
 
     def _sync_input_monitoring(self) -> None:
-        if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
-            self._bridge.ensure_input_monitoring()
-        else:
+        if not (self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded):
             self._bridge.release_input_monitoring()
+            return
+        if not record_audio_granted():
+            self.set_status("Grant microphone permission for self-audio meters")
+            request_android_permissions()
+            return
+        if not self._bridge.ensure_input_monitoring():
+            self.set_status("Microphone unavailable — chat-only mode")
+
+    def set_peer_muted(self, composite_key: str, muted: bool) -> None:
+        self._bridge.set_participant_muted(composite_key, muted)
+
+    def set_peer_volume(self, composite_key: str, volume: float) -> None:
+        self._bridge.set_participant_volume(composite_key, volume)
+
+    def send_peer_tap(self, link_id: str, client_id: str) -> None:
+        self._bridge.send_tap(link_id, client_id)
 
     def on_live_enter(self) -> None:
         live = self.app.screen("live")

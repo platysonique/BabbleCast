@@ -163,7 +163,7 @@ class ConnectScreen(MDScreen):
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         app.controller.connect_discovered(
-            server.host,
+            server.connect_host,
             server.ws_port,
             server.label,
             password_required=server.password_required,
@@ -580,11 +580,14 @@ class LiveScreen(MDScreen):
 
 class SettingsScreen(MDScreen):
     gate_db = NumericProperty(-40)
+    noise_pct = NumericProperty(50)
 
     def on_enter(self, *_args) -> None:
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
-        self.gate_db = int(app.controller.settings.gate_threshold_db)
+        s = app.controller.settings
+        self.gate_db = int(s.gate_threshold_db)
+        self.noise_pct = int(s.noise_suppression * 100)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -600,12 +603,21 @@ class SettingsScreen(MDScreen):
             theme_text_color="Custom",
             text_color=TEXT,
         )
-        slider = MDSlider(min=-80, max=0, value=-40, step=1)
-        slider.bind(value=lambda _s, v: self._gate_changed(v))
+        gate_slider = MDSlider(min=-80, max=0, value=-40, step=1)
+        gate_slider.bind(value=lambda _s, v: self._gate_changed(v))
         root.add_widget(self._gate_label)
-        root.add_widget(slider)
+        root.add_widget(gate_slider)
+        self._noise_label = MDLabel(
+            text="Noise suppression: 50%",
+            theme_text_color="Custom",
+            text_color=TEXT,
+        )
+        noise_slider = MDSlider(min=0, max=100, value=50, step=1)
+        noise_slider.bind(value=lambda _s, v: self._noise_changed(v))
+        root.add_widget(self._noise_label)
+        root.add_widget(noise_slider)
         hint = MDLabel(
-            text="Lower = more sensitive mic. Same gate as desktop BabbleCast.",
+            text="Gate and suppression match desktop. Suppression uses a built-in expander on Android.",
             theme_text_color="Custom",
             text_color=MUTED,
             font_style="Caption",
@@ -618,4 +630,10 @@ class SettingsScreen(MDScreen):
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         app.controller.set_gate_db(float(value))
+
+    def _noise_changed(self, value: float) -> None:
+        self._noise_label.text = f"Noise suppression: {int(value)}%"
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.set_noise_suppression(value / 100.0)
 

@@ -224,6 +224,8 @@ class ClientSession:
             await self._ws.send(message)
 
     async def _handle(self, data: dict[str, Any]) -> None:
+        if not self._running:
+            return
         mtype = data.get("type")
         if mtype == MsgType.WELCOME:
             self._welcomed = True

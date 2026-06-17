@@ -17,6 +17,19 @@ def _android_api_level() -> int:
         return 0
 
 
+def record_audio_granted() -> bool:
+    try:
+        from kivy.utils import platform
+
+        if platform != "android":
+            return True
+        from android.permissions import Permission, check_permission
+
+        return bool(check_permission(Permission.RECORD_AUDIO))
+    except Exception:
+        return True
+
+
 def request_android_permissions() -> None:
     try:
         from kivy.utils import platform
@@ -35,6 +48,8 @@ def request_android_permissions() -> None:
         ]
         if _android_api_level() >= 31:
             needed.append(Permission.BLUETOOTH_CONNECT)
+        if _android_api_level() >= 33:
+            needed.append(Permission.NEARBY_WIFI_DEVICES)
         request_permissions(needed)
         if not check_permission(Permission.ACCESS_FINE_LOCATION):
             logger.warning(

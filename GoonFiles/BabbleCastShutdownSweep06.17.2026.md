@@ -12,13 +12,13 @@
 - `main_window.closeEvent` — `_closing` guard, block signals, `bridge.shutdown()` before destroy
 - `NoiseSuppressor` — skip noisereduce on 960-sample frames (scipy nperseg warning)
 
-## Goon audit findings (remaining lower priority)
+## Goon audit findings — ALL FIXED
 
 | Severity | Item | Status |
 |----------|------|--------|
-| Medium | `SpeakerOutput.stop()` now joins mix worker | Fixed |
+| Medium | `SpeakerOutput.stop()` joins mix worker | Fixed |
 | Medium | Mobile `stop_all()` uses `bridge.shutdown()` + unschedule tick | Fixed |
 | Medium | `discovery.stop()` clears `on_update` | Fixed |
 | Medium | `embedded.stop()` clears callbacks | Fixed |
-| Low | Session WS handlers during partial disconnect | Open — guarded by bridge shutdown |
-| Low | Tap dialog close ordering | Mitigated — close all in closeEvent |
+| Low | Session WS handlers during partial disconnect | Fixed — `_handle` ignores when `_running` is false |
+| Low | Tap dialog close ordering | Fixed — dismiss in `stop_all` / `closeEvent` |
