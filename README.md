@@ -17,7 +17,7 @@ Team live communication hub — voice + text chat for LAN and Tailscale networks
 ## Quick start (Linux)
 
 ```bash
-git clone git@github.com:YOUR_USER/BabbleCast.git
+git clone git@github.com:platysonique/BabbleCast.git
 cd BabbleCast
 bash packaging/linux/install.sh
 bbc
