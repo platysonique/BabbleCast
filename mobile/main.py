@@ -23,7 +23,8 @@ from babblecast.constants import MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
-from mobile.permissions import request_android_permissions
+from mobile.android_network import acquire_multicast_lock, release_multicast_lock
+from mobile.permissions import location_granted, request_android_permissions
 from mobile.theme import ACCENT, BG, MUTED, SURFACE, TEXT, apply_theme
 
 
@@ -42,6 +43,7 @@ class BabbleController:
                 lambda _dt, i=lid, parts=p: self._on_presence(i, parts)
             ),
             on_chat=lambda lid, d: Clock.schedule_once(lambda _dt, i=lid, msg=d: self._on_chat(i, msg)),
+            on_rooms=lambda lid, r: Clock.schedule_once(lambda _dt, i=lid, rooms=r: self._on_rooms(i, rooms)),
             on_error=lambda lid, m: Clock.schedule_once(lambda _dt, msg=m: self.set_status(msg)),
             on_tap_received=lambda lid, d: Clock.schedule_once(
                 lambda _dt, i=lid, data=d: self._on_tap_received(i, data)
@@ -54,6 +56,7 @@ class BabbleController:
         self._embedded: EmbeddedServer | None = None
         self._active_link_id: str | None = None
         self._presence: dict[str, list] = {}
+        self._rooms: dict[str, list] = {}
         self._tap_ids: dict[tuple[str, str], str] = {}
         self._tap_messages: list[dict] = []
         self._tap_dialog: MDDialog | None = None
@@ -79,10 +82,20 @@ class BabbleController:
 
     def start_discovery(self) -> None:
         request_android_permissions()
+        acquire_multicast_lock()
         self._discovery.start()
+        self._apply_servers(self._discovery.servers)
+        screen = self.app.screen("connect")
+        if location_granted():
+            screen.set_discovery_status("Searching LAN for BabbleCast servers…")
+        else:
+            screen.set_discovery_status(
+                "Grant Location permission for auto-discover, or enter PC IP below"
+            )
 
     def stop_all(self) -> None:
         self._discovery.stop()
+        release_multicast_lock()
         self._bridge.disconnect_all()
         if self._embedded and self._embedded.running:
             self._embedded.stop()
@@ -90,15 +103,37 @@ class BabbleController:
     def _apply_servers(self, servers) -> None:
         screen = self.app.screen("connect")
         screen.update_servers(servers)
+        if servers:
+            screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
+        elif location_granted():
+            screen.set_discovery_status("No servers found yet — same Wi‑Fi as PC, or enter IP below")
 
-    def select_server(self, host: str, port: int) -> None:
+    def connect_to(self, host: str, port: int, display_name: str) -> None:
+        host = host.strip()
+        if not host:
+            self.set_status("Enter a server IP or hostname")
+            return
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            self.set_status("Port must be a number (usually 8765)")
+            return
         self._pending_host = host
         self._pending_port = port
-        self.set_status(f"Selected {host}:{port} — tap Connect")
+        self.connect_selected(display_name, host=host, port=port)
 
-    def connect_selected(self, display_name: str) -> None:
-        host = self._pending_host or self._settings.last_server_host or "127.0.0.1"
-        port = self._pending_port or self._settings.last_server_port or 8765
+    def connect_selected(
+        self,
+        display_name: str,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> None:
+        host = (host or self._pending_host or self._settings.last_server_host or "").strip()
+        port = port or self._pending_port or self._settings.last_server_port or 8765
+        if not host:
+            self.set_status("Pick a discovered server or enter IP:port below")
+            return
         for link in self._bridge.links:
             if link.host == host and link.port == port and link.connected:
                 self.set_status(f"Already on {host}:{port}")
@@ -162,9 +197,8 @@ class BabbleController:
         threading.Timer(0.8, lambda: Clock.schedule_once(lambda _dt: self._join_local_host())).start()
 
     def _join_local_host(self) -> None:
-        self.select_server("127.0.0.1", 8765)
         screen = self.app.screen("connect")
-        self.connect_selected(screen.display_name)
+        self.connect_to("127.0.0.1", 8765, screen.display_name)
 
     def _on_link_connected(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -172,15 +206,19 @@ class BabbleController:
             return
         if not self._active_link_id:
             self._active_link_id = link_id
+        self._bridge.request_rooms(link_id)
         live = self.app.screen("live")
         live.add_connected_link(link_id, link)
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
+        rooms = self._rooms.get(link_id, [])
+        live.update_rooms(rooms, self._active_link_id == link_id)
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         live = self.app.screen("live")
         live.remove_connected_link(link_id)
         self._presence.pop(link_id, None)
+        self._rooms.pop(link_id, None)
         if self._active_link_id == link_id:
             remaining = live.connected_link_ids()
             self._active_link_id = remaining[0] if remaining else None
@@ -196,6 +234,8 @@ class BabbleController:
         self.chat_text = ""
         live = self.app.screen("live")
         live.chat_text = ""
+        rooms = self._rooms.get(link_id, [])
+        live.update_rooms(rooms, True)
 
     def toggle_listen(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -234,6 +274,23 @@ class BabbleController:
         self._presence[link_id] = participants
         live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
+
+    def _on_rooms(self, link_id: str, rooms: list) -> None:
+        self._rooms[link_id] = rooms
+        live = self.app.screen("live")
+        live.update_rooms(rooms, self._active_link_id == link_id)
+
+    def join_room(self, room_id: str) -> None:
+        if not self._active_link_id:
+            return
+        self._bridge.join_room(self._active_link_id, room_id)
+        self.set_status("Switching room…")
+
+    def create_room(self, name: str) -> None:
+        if not self._active_link_id or not name.strip():
+            return
+        self._bridge.create_room(self._active_link_id, name.strip())
+        self.set_status(f"Creating room “{name.strip()}”…")
 
     def _on_chat(self, link_id: str, data: dict) -> None:
         if link_id != self._active_link_id:
@@ -347,7 +404,6 @@ class ConnectScreen(MDScreen):
         if not getattr(app, "controller", None):
             return
         self.display_name = app.controller.settings.display_name or "Mobile"
-        app.controller.start_discovery()
 
     def on_leave(self, *_args) -> None:
         pass
@@ -370,19 +426,58 @@ class ConnectScreen(MDScreen):
         self._name_field = MDTextField(hint_text="Your name", text=self.display_name)
         self._name_field.bind(text=lambda _w, v: setattr(self, "display_name", v))
 
-        discover_label = MDLabel(text="Discover nearby", font_style="H6", theme_text_color="Custom", text_color=TEXT)
+        discover_label = MDLabel(text="Discover (same Wi‑Fi)", font_style="H6", theme_text_color="Custom", text_color=TEXT)
+        self._discovery_status = MDLabel(
+            text="Searching…",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            font_style="Caption",
+            size_hint_y=None,
+            height=dp(36),
+        )
         self._server_box = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None)
         self._server_box.bind(minimum_height=self._server_box.setter("height"))
-        server_scroll = ScrollView(size_hint_y=None, height=dp(200))
+        server_scroll = ScrollView(size_hint_y=None, height=dp(160))
         server_scroll.add_widget(self._server_box)
 
+        manual_label = MDLabel(
+            text="Or connect manually (PC LAN IP, not 127.0.0.1)",
+            font_style="H6",
+            theme_text_color="Custom",
+            text_color=TEXT,
+        )
+        manual_row = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        settings = get_settings()
+        self._host_field = MDTextField(
+            hint_text="Server IP",
+            text=settings.last_server_host or "",
+            size_hint_x=0.65,
+        )
+        self._port_field = MDTextField(
+            hint_text="Port",
+            text=str(settings.last_server_port or 8765),
+            size_hint_x=0.35,
+        )
+        manual_row.add_widget(self._host_field)
+        manual_row.add_widget(self._port_field)
+
         btn_row = MDBoxLayout(spacing=dp(12), size_hint_y=None, height=dp(48))
-        host_btn = MDRaisedButton(text="Host server", md_bg_color=ACCENT, on_release=lambda *_: self._host())
-        connect_btn = MDFlatButton(text="Connect", on_release=lambda *_: self._connect())
+        host_btn = MDRaisedButton(text="Host on this phone", md_bg_color=ACCENT, on_release=lambda *_: self._host())
+        connect_btn = MDRaisedButton(text="Connect", on_release=lambda *_: self._connect())
         btn_row.add_widget(host_btn)
         btn_row.add_widget(connect_btn)
 
-        for w in (header, sub, self._name_field, discover_label, server_scroll, btn_row):
+        for w in (
+            header,
+            sub,
+            self._name_field,
+            discover_label,
+            self._discovery_status,
+            server_scroll,
+            manual_label,
+            manual_row,
+            btn_row,
+        ):
             root.add_widget(w)
         self.add_widget(root)
 
@@ -394,7 +489,14 @@ class ConnectScreen(MDScreen):
     def _connect(self) -> None:
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
-        app.controller.connect_selected(self._name_field.text)
+        try:
+            port = int(self._port_field.text.strip() or "8765")
+        except ValueError:
+            port = 8765
+        app.controller.connect_to(self._host_field.text, port, self._name_field.text)
+
+    def set_discovery_status(self, text: str) -> None:
+        self._discovery_status.text = text
 
     def update_servers(self, servers) -> None:
         from kivymd.uix.button import MDFlatButton
@@ -405,11 +507,11 @@ class ConnectScreen(MDScreen):
 
             self._server_box.add_widget(
                 MDLabel(
-                    text="No servers found — host one or join manually from Live tab",
+                    text="Nothing on LAN yet — enter your PC’s IP below (Settings → Wi‑Fi on PC for address)",
                     theme_text_color="Custom",
                     text_color=MUTED,
                     size_hint_y=None,
-                    height=dp(48),
+                    height=dp(56),
                 )
             )
             return
@@ -433,13 +535,13 @@ class ConnectScreen(MDScreen):
                     font_style="Caption",
                 )
             )
-            card.bind(on_release=lambda _c, h=s.host, p=s.ws_port: self._pick(h, p))
+            card.bind(on_release=lambda _c, h=s.host, p=s.ws_port, n=s.name: self._connect_server(h, p, n))
             self._server_box.add_widget(card)
 
-    def _pick(self, host: str, port: int) -> None:
+    def _connect_server(self, host: str, port: int, _name: str) -> None:
         app = MDApp.get_running_app()
         assert isinstance(app, BabbleCastMobileApp)
-        app.controller.select_server(host, port)
+        app.controller.connect_to(host, port, self._name_field.text)
 
 
 class LiveScreen(MDScreen):
@@ -463,13 +565,19 @@ class LiveScreen(MDScreen):
         conn_label = MDLabel(text="Connected servers", font_style="H6", theme_text_color="Custom", text_color=TEXT)
         self._connected_box = MDBoxLayout(orientation="vertical", spacing=dp(6), size_hint_y=None)
         self._connected_box.bind(minimum_height=self._connected_box.setter("height"))
-        conn_scroll = ScrollView(size_hint_y=None, height=dp(120))
+        conn_scroll = ScrollView(size_hint_y=None, height=dp(100))
         conn_scroll.add_widget(self._connected_box)
+
+        rooms_label = MDLabel(text="Rooms (active server)", font_style="H6", theme_text_color="Custom", text_color=TEXT)
+        self._rooms_box = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
+        self._rooms_box.bind(minimum_height=self._rooms_box.setter("height"))
+        rooms_scroll = ScrollView(size_hint_y=None, height=dp(80))
+        rooms_scroll.add_widget(self._rooms_box)
 
         people_label = MDLabel(text="People in room", font_style="H6", theme_text_color="Custom", text_color=TEXT)
         self._people_box = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
         self._people_box.bind(minimum_height=self._people_box.setter("height"))
-        people_scroll = ScrollView(size_hint_y=None, height=dp(160))
+        people_scroll = ScrollView(size_hint_y=None, height=dp(120))
         people_scroll.add_widget(self._people_box)
 
         ctrl = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(44))
@@ -496,6 +604,8 @@ class LiveScreen(MDScreen):
             self._status,
             conn_label,
             conn_scroll,
+            rooms_label,
+            rooms_scroll,
             people_label,
             people_scroll,
             ctrl,
@@ -522,6 +632,39 @@ class LiveScreen(MDScreen):
         assert isinstance(app, BabbleCastMobileApp)
         app.controller.send_chat(self._chat_input.text)
         self._chat_input.text = ""
+
+    def update_rooms(self, rooms: list, is_active: bool) -> None:
+        from kivymd.uix.label import MDLabel
+
+        self._rooms_box.clear_widgets()
+        if not is_active:
+            return
+        if not rooms:
+            self._rooms_box.add_widget(
+                MDLabel(
+                    text="Default room",
+                    theme_text_color="Custom",
+                    text_color=MUTED,
+                    size_hint_y=None,
+                    height=dp(32),
+                )
+            )
+            return
+        app = MDApp.get_running_app()
+        assert isinstance(app, BabbleCastMobileApp)
+        for room in rooms:
+            rid = str(room.get("room_id", ""))
+            name = str(room.get("name", "Room"))
+            row = MDCard(
+                padding=dp(8),
+                size_hint_y=None,
+                height=dp(40),
+                md_bg_color=SURFACE,
+                ripple_behavior=True,
+            )
+            row.add_widget(MDLabel(text=name, theme_text_color="Custom", text_color=TEXT))
+            row.bind(on_release=lambda _w, r=rid: app.controller.join_room(r))
+            self._rooms_box.add_widget(row)
 
     def connected_link_ids(self) -> list[str]:
         return list(self._link_items.keys())
@@ -679,6 +822,7 @@ class BabbleCastMobileApp(MDApp):
 
         root = MDBoxLayout(orientation="vertical")
         sm = MDScreenManager(size_hint_y=1)
+        self._screen_manager = sm
         sm.add_widget(ConnectScreen(name="connect"))
         sm.add_widget(LiveScreen(name="live"))
         sm.add_widget(SettingsScreen(name="settings"))
@@ -706,7 +850,7 @@ class BabbleCastMobileApp(MDApp):
             tab_row.add_widget(btn)
         root.add_widget(tab_row)
 
-        self._screen_manager = sm
+        Clock.schedule_once(lambda _dt: self.controller.start_discovery(), 0)
         return root
 
     def switch_tab(self, name: str) -> None:
