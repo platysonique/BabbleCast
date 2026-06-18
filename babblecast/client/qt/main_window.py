@@ -41,17 +41,18 @@ from babblecast.client.qt.credentials_dialog import (
 )
 from babblecast.client.qt.detail_drawer import DetailDrawer
 from babblecast.client.qt.participant_widget import ParticipantWidget
+from babblecast.client.qt.server_info_dialog import ServerInfoDialog
 from babblecast.client.qt.server_link_widget import ServerLinkWidget
+from babblecast.client.link_stats import link_display_name
 from babblecast.client.qt.styles import STYLESHEET
 from babblecast.client.qt.tap_chat_dialog import TapChatDialog
-from babblecast.client.qt.tap_notes_bar import TapNotesBar
+from babblecast.client.qt.tap_note_dialog import TapNoteComposeDialog, TapNoteViewDialog
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import (
     DEFAULT_WS_PORT,
     UI_ACTIVE_GREEN,
     UI_MUTE_ORANGE,
     UI_MUTED_RED,
-    UI_SUNFLOWER,
     composite_participant_key,
 )
 from babblecast.active_tap_chats import get_active_tap_chat_store
@@ -245,33 +246,9 @@ class MainWindow(QMainWindow):
 
         chat_group = QGroupBox("Text chat (active server)")
         chat_layout = QVBoxLayout(chat_group)
-        chat_toolbar = QHBoxLayout()
-        chat_toolbar.addStretch()
-        self._clear_chat_btn = QPushButton("Clear Chat")
-        self._clear_chat_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {UI_MUTED_RED}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
-        )
-        self._clear_chat_btn.clicked.connect(self._clear_chat)
-        self._add_tap_note_btn = QPushButton("+ Tap Note")
-        self._add_tap_note_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {UI_SUNFLOWER}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
-        )
-        self._add_tap_note_btn.clicked.connect(lambda: self._prompt_add_tap_note())
-        chat_toolbar.addWidget(self._clear_chat_btn)
-        chat_toolbar.addWidget(self._add_tap_note_btn)
-        chat_toolbar.addStretch()
-        chat_layout.addLayout(chat_toolbar)
         self._chat_log = QTextEdit()
         self._chat_log.setReadOnly(True)
         chat_layout.addWidget(self._chat_log)
-        self._tap_notes = TapNotesBar(
-            on_add=lambda: self._prompt_add_tap_note(),
-            on_delete=self._delete_tap_note,
-            on_open=self._open_tap_note_from_list,
-            on_open_active=self._open_active_tap_chat,
-            on_clear_active=self._clear_active_tap_chat,
-        )
-        chat_layout.addWidget(self._tap_notes)
         chat_input_row = QHBoxLayout()
         self._mute_btn = QPushButton("Mic")
         self._mute_btn.setCheckable(True)
@@ -303,6 +280,7 @@ class MainWindow(QMainWindow):
             on_reopen_tap=self._reinsert_saved_tap,
             on_add_tap_note=self._add_tap_note_for_peer,
             on_delete_tap_note=self._delete_tap_note,
+            on_view_tap_note=self._view_tap_note,
             panel_expanded=self._settings.ui_panel_expanded,
             self_audio_expanded=self._settings.ui_self_audio_expanded,
         )
@@ -320,7 +298,6 @@ class MainWindow(QMainWindow):
         root.addWidget(self._drawer, 0)
         if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
             self._bridge.ensure_input_monitoring()
-        self._tap_notes.refresh()
 
     def _load_devices(self) -> None:
         self._input_devices = list_input_devices()
@@ -529,10 +506,11 @@ class MainWindow(QMainWindow):
         link = self._bridge.get_link(link_id)
         if not link or link_id in self._link_widgets:
             return
-        w = ServerLinkWidget(link_id, link.label)
+        w = ServerLinkWidget(link_id, link_display_name(link))
         w.listen_mute_toggled.connect(self._on_listen_mute)
         w.mic_mute_toggled.connect(self._on_mic_mute)
         w.disconnect_requested.connect(self._disconnect_link)
+        w.info_requested.connect(self._show_server_info)
         w.selected.connect(self._set_active_link)
         self._link_widgets[link_id] = w
         self._connected_layout.insertWidget(self._connected_layout.count() - 1, w)
@@ -552,12 +530,31 @@ class MainWindow(QMainWindow):
                 self._bridge.request_rooms(self._active_link_id)
         self._rebuild_participants()
 
+    def _show_server_info(self, link_id: str) -> None:
+        link = self._bridge.get_link(link_id)
+        if not link:
+            return
+        session = self._bridge.get_session(link_id)
+        room_name = ""
+        if session and session.room_id:
+            room_name = self._room_by_link.get(link_id, ("", ""))[1]
+        presence = self._presence_by_link.get(link_id, [])
+        dlg = ServerInfoDialog(
+            self._bridge,
+            link_id,
+            presence_count=len(presence),
+            current_room_name=room_name,
+            is_active=(link_id == self._active_link_id),
+            parent=self,
+        )
+        dlg.exec()
+
     def _on_link_connected(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
         label = link.label if link else link_id
         self._add_link_widget(link_id)
         if link:
-            self._link_widgets[link_id].update_label(link.label)
+            self._link_widgets[link_id].update_label(link_display_name(link))
         self._bridge.request_rooms(link_id)
         self._refresh_status()
         self._status.setText(f"Connected — {label}")
@@ -579,7 +576,6 @@ class MainWindow(QMainWindow):
             if chat:
                 self._peer_names[key] = chat.peer_name
         if restored:
-            self._tap_notes.refresh()
             self._rebuild_participants()
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
@@ -1040,6 +1036,8 @@ class MainWindow(QMainWindow):
             peer_id,
             peer_name,
             link.label if link else link_id,
+            on_notes_changed=self._refresh_tap_notes_ui,
+            on_delete_tap_note=self._delete_tap_note,
             parent=self,
         )
         dlg.finished.connect(lambda _r, k=key: self._on_tap_dialog_closed(k))
@@ -1070,93 +1068,24 @@ class MainWindow(QMainWindow):
                 self._tap_ids.pop(tap_key, None)
         self._refresh_tap_notes_ui()
 
-    def _find_link_for_chat(self, tap_id: str) -> tuple[str, str] | None:
-        chat = get_active_tap_chat_store().get(tap_id)
-        if not chat:
-            return None
-        for link_id in self._link_widgets:
-            link = self._bridge.get_link(link_id)
-            if link and link.host == chat.link_host and link.port == chat.link_port:
-                return link_id, chat.peer_id
-        return None
-
-    def _open_active_tap_chat(self, tap_id: str) -> None:
-        resolved = self._find_link_for_chat(tap_id)
-        if not resolved:
-            QMessageBox.information(
-                self,
-                "Tap chat",
-                "Connect to the same server to reopen this tap chat.",
-            )
+    def _view_tap_note(self, save_id: str) -> None:
+        tap = get_tap_store().get(save_id)
+        if not tap:
             return
-        link_id, peer_id = resolved
-        self._tap_ids[(link_id, peer_id)] = tap_id
-        self._open_tap_for_peer(link_id, peer_id)
-
-    def _clear_active_tap_chat(self, tap_id: str) -> None:
-        if not self._settings.skip_tap_delete_confirm:
-            dlg = ConfirmCheckboxDialog(
-                "Clear tap chat",
-                "Clear this tap chat permanently?",
-                confirm_label="Clear",
-                confirm_style="color: #f7768e; font-weight: 600;",
-                parent=self,
-            )
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            if dlg.skip_future:
-                self._settings.skip_tap_delete_confirm = True
-                save_settings(self._settings)
-        resolved = self._find_link_for_chat(tap_id)
-        link_id = resolved[0] if resolved else None
-        self._bridge.clear_active_tap_chat(tap_id, link_id=link_id)
-        for key in list(self._tap_ids):
-            if self._tap_ids.get(key) == tap_id:
-                self._tap_ids.pop(key, None)
-        key = (link_id, tap_id) if link_id else None
-        if key and key in self._tap_dialogs:
-            self._tap_dialogs.pop(key).close()
-        self._refresh_tap_notes_ui()
+        dlg = TapNoteViewDialog(tap, on_saved=self._refresh_tap_notes_ui, parent=self)
+        dlg.exec()
 
     def _reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
-        for tap in get_tap_store().items:
-            if tap.save_id == save_id:
-                lines = [f"{m.get('name', '?')}: {m.get('text', '')}" for m in tap.messages]
-                summary = "\n".join(lines) or tap.reminder
-                if self._active_link_id == link_id and summary:
-                    self._bridge.send_chat(link_id, f"[Saved tap — {tap.reminder}]\n{summary}")
-                break
+        tap = get_tap_store().get(save_id)
+        if not tap or self._active_link_id != link_id:
+            return
+        body = tap.detail.strip() or tap.display_subject
+        self._bridge.send_chat(link_id, f"[Tap note — {tap.display_subject}]\n{body}")
 
     def _refresh_status(self) -> None:
         n = sum(1 for l in self._bridge.links if l.connected)
         if n:
             self._status.setText(f"{n} server(s) connected — mixed audio active")
-
-    def _clear_chat(self) -> None:
-        if not self._active_link_id:
-            QMessageBox.information(self, "BabbleCast", "Connect to a server first.")
-            return
-        session = self._bridge.get_session(self._active_link_id)
-        if not session or not session.room_id:
-            QMessageBox.information(self, "BabbleCast", "Join a room before clearing chat.")
-            return
-        if not self._settings.skip_clear_chat_confirm:
-            dlg = ConfirmCheckboxDialog(
-                "Clear Chat",
-                "Clear all messages in this room's chat history?",
-                confirm_label="Clear",
-                confirm_style="color: #f7768e; font-weight: 600;",
-                parent=self,
-            )
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            if dlg.skip_future:
-                self._settings.skip_clear_chat_confirm = True
-                save_settings(self._settings)
-        link = self._bridge.get_link(self._active_link_id)
-        if link:
-            purge_room_chat(link.host, link.port, session.room_id)
-        self._chat_log.clear()
 
     def _prompt_add_tap_note(
         self,
@@ -1164,7 +1093,7 @@ class MainWindow(QMainWindow):
         link_id: str | None = None,
         peer_id: str | None = None,
         peer_name: str | None = None,
-        default_reminder: str = "",
+        default_subject: str = "",
     ) -> None:
         lid = link_id or self._active_link_id
         link = self._bridge.get_link(lid) if lid else None
@@ -1172,20 +1101,19 @@ class MainWindow(QMainWindow):
             peer_id = self._drawer.peer_client_id
             lid = lid or self._drawer.peer_link_id
             peer_name = peer_name or self._peer_names.get((lid or "", peer_id), "Note")
-        reminder, ok = QInputDialog.getText(
-            self,
-            "+ Tap Note",
-            "Tap note reminder:",
-            text=default_reminder or (f"Follow up with {peer_name}" if peer_name else ""),
+        dlg = TapNoteComposeDialog(
+            default_subject=default_subject or (f"Follow up with {peer_name}" if peer_name else ""),
+            parent=self,
         )
-        if not ok or not reminder.strip():
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         get_tap_store().add(
             SavedTap.create(
                 peer_id=peer_id or "",
                 peer_name=peer_name or "Note",
                 server_label=link.label if link else "",
-                reminder=reminder.strip(),
+                subject=dlg.subject,
+                detail=dlg.detail,
             )
         )
         self._refresh_tap_notes_ui()
@@ -1196,7 +1124,7 @@ class MainWindow(QMainWindow):
             link_id=link_id,
             peer_id=peer_id,
             peer_name=peer_name,
-            default_reminder=f"Follow up with {peer_name}",
+            default_subject=f"Follow up with {peer_name}",
         )
 
     def _delete_tap_note(self, save_id: str) -> None:
@@ -1217,15 +1145,9 @@ class MainWindow(QMainWindow):
         self._refresh_tap_notes_ui()
 
     def _refresh_tap_notes_ui(self) -> None:
-        self._tap_notes.refresh()
         self._drawer.refresh_tap_notes()
-
-    def _open_tap_note_from_list(self, save_id: str) -> None:
-        for tap in get_tap_store().items:
-            if tap.save_id == save_id:
-                for lid in self._link_widgets:
-                    self._reinsert_saved_tap(lid, save_id)
-                break
+        for dlg in self._tap_dialogs.values():
+            dlg.refresh_notes()
 
     def _is_ptt_key(self, event: QKeyEvent) -> bool:
         return (

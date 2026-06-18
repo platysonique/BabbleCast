@@ -54,3 +54,25 @@ def test_active_tap_chat_restore_remaps_peer_id(tmp_path, monkeypatch) -> None:
     )
     assert mapping[("link-1", "new-id")] == "tap-2"
     assert store.get("tap-2").peer_id == "new-id"
+
+
+def test_active_tap_chat_clear_messages_keeps_thread(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "babblecast.active_tap_chats.app_config_dir",
+        lambda *, create=False: tmp_path,
+    )
+    store = ActiveTapChatStore()
+    store.record_received(
+        tap_id="tap-3",
+        link_host="127.0.0.1",
+        link_port=9513,
+        peer_id="p1",
+        peer_name="Pat",
+        server_label="LAN",
+    )
+    store.append_message("tap-3", name="Pat", text="ping", ts="09:00")
+    store.clear_messages("tap-3")
+    chat = store.get("tap-3")
+    assert chat is not None
+    assert chat.messages == []
+    assert chat.peer_name == "Pat"

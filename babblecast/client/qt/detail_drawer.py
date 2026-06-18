@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from babblecast.client.qt.collapsible_section import CollapsibleSection
 from babblecast.client.qt.meter_strip import MeterVolumeStrip
 from babblecast.client.qt.vertical_meter import METER_HEIGHT, VerticalMeter
+from babblecast.client.qt.tap_note_dialog import TapNoteRowLabel
 from babblecast.taps import get_tap_store
 
 
@@ -48,6 +49,7 @@ class DetailDrawer(QWidget):
         on_reopen_tap,
         on_add_tap_note,
         on_delete_tap_note,
+        on_view_tap_note,
         panel_expanded: bool = False,
         self_audio_expanded: bool = False,
         parent=None,
@@ -67,6 +69,7 @@ class DetailDrawer(QWidget):
         self._on_reopen_tap = on_reopen_tap
         self._on_add_tap_note = on_add_tap_note
         self._on_delete_tap_note = on_delete_tap_note
+        self._on_view_tap_note = on_view_tap_note
 
         self._open_composite: str | None = None
         self._peer_client_id = ""
@@ -457,10 +460,9 @@ class DetailDrawer(QWidget):
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
             mark = "✓ " if tap.done else "○ "
-            label = QLabel(f"{mark}{tap.reminder[:48]}")
+            label = TapNoteRowLabel(tap.save_id, f"{mark}{tap.display_subject[:48]}")
             label.setStyleSheet("color: #a9b1d6; font-size: 11px;")
-            label.setCursor(Qt.CursorShape.PointingHandCursor)
-            label.mousePressEvent = lambda _e, sid=tap.save_id: self._open_saved_tap(sid)  # type: ignore[method-assign]
+            label.double_clicked.connect(self._on_view_tap_note)
             delete_btn = QPushButton("✕")
             delete_btn.setFixedSize(24, 24)
             delete_btn.setStyleSheet(
@@ -471,10 +473,6 @@ class DetailDrawer(QWidget):
             row_layout.addWidget(label, stretch=1)
             row_layout.addWidget(delete_btn)
             self._tap_list_layout.addWidget(row)
-
-    def _open_saved_tap(self, save_id: str) -> None:
-        if self._peer_link_id:
-            self._on_reopen_tap(self._peer_link_id, save_id)
 
     def _add_peer_tap_note(self) -> None:
         if self._peer_link_id and self._peer_client_id:

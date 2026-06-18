@@ -295,7 +295,7 @@ class BridgeManager:
                 state.is_server_operator = session.is_server_operator
                 if session.server_name:
                     state.server_name = session.server_name
-                    state.label = f"{session.server_name} ({state.host})"
+                    state.label = session.server_name
             if self._on_link_connected:
                 self._on_link_connected(link_id)
 

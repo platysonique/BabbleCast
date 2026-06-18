@@ -143,6 +143,22 @@ class ClientSession:
         return self._host_password_protected
 
     @property
+    def host(self) -> str:
+        return self._host
+
+    @property
+    def ws_port(self) -> int:
+        return self._ws_port
+
+    @property
+    def local_udp_port(self) -> int:
+        return self._udp_port
+
+    @property
+    def server_udp_port(self) -> int:
+        return self._server_udp_port
+
+    @property
     def connected(self) -> bool:
         return self._running and self._ws is not None
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QContextMenuEvent
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QWidget
 
 from babblecast.constants import UI_ACTIVE_GREEN, UI_MUTED_RED
 
@@ -12,7 +13,7 @@ def _mute_button_style(muted: bool) -> str:
     bg = UI_MUTED_RED if muted else UI_ACTIVE_GREEN
     return (
         f"QPushButton {{ background-color: {bg}; color: #1a1b26; border: none;"
-        " border-radius: 6px; font-size: 14px; font-weight: 600; }}"
+        f" border-radius: 6px; font-size: 14px; font-weight: 600; }}"
     )
 
 
@@ -21,11 +22,13 @@ class ServerLinkWidget(QWidget):
     listen_mute_toggled = pyqtSignal(str, bool)
     mic_mute_toggled = pyqtSignal(str, bool)
     disconnect_requested = pyqtSignal(str)
+    info_requested = pyqtSignal(str)
 
     def __init__(self, link_id: str, label: str, parent=None) -> None:
         super().__init__(parent)
         self.link_id = link_id
         self._label = QLabel(label)
+        self._label.setToolTip("Right-click for server info")
         self._listen_btn = QPushButton("🔊")
         self._listen_btn.setCheckable(True)
         self._listen_btn.setToolTip("Mute listening to this server (red = muted, green = hearing)")
@@ -52,9 +55,18 @@ class ServerLinkWidget(QWidget):
         self._listen_btn.toggled.connect(self._listen_toggled)
         self._mic_btn.toggled.connect(self._mic_toggled)
         self._close_btn.clicked.connect(lambda: self.disconnect_requested.emit(self.link_id))
-        self.mousePressEvent = lambda _e: self.selected.emit(self.link_id)  # type: ignore[method-assign]
         self.set_listen_muted(False)
         self.set_mic_muted(False)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected.emit(self.link_id)
+        super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        menu = QMenu(self)
+        menu.addAction("Server info…", lambda: self.info_requested.emit(self.link_id))
+        menu.exec(event.globalPos())
 
     def _listen_toggled(self, muted: bool) -> None:
         self.set_listen_muted(muted)

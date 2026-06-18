@@ -394,6 +394,7 @@ class SideDetailPanel(MDBoxLayout):
         server: str,
         is_self: bool,
         tap_active: bool = False,
+        tapped: bool = False,
     ) -> None:
         if self.is_open_for(composite):
             self.close_peer()
@@ -415,7 +416,7 @@ class SideDetailPanel(MDBoxLayout):
         self._peer_meter.set_level(float(participant.get("voice_level", 0)))
         self._tap_btn.disabled = is_self
         self._tap_btn.opacity = 0.35 if is_self else 1
-        show_tap_chat = tap_active and not is_self
+        show_tap_chat = (tap_active or tapped) and not is_self
         self._tap_chat_btn.disabled = not show_tap_chat
         self._tap_chat_btn.opacity = 1 if show_tap_chat else 0.35
         self._tech_label.text = (
@@ -510,12 +511,13 @@ class SideDetailPanel(MDBoxLayout):
         for tap in saved:
             mark = "✓" if tap.done else "○"
             row = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+            from mobile.tap_note_dialog import TapNoteListRow
+
             row.add_widget(
-                MDFlatButton(
-                    text=f"{mark} {tap.reminder[:32]}",
-                    on_release=lambda *_t, sid=tap.save_id: self._controller.reinsert_saved_tap(
-                        self._peer_link_id, sid
-                    ),
+                TapNoteListRow(
+                    tap.save_id,
+                    f"{mark} {tap.display_subject[:32]}",
+                    on_open=lambda sid, c=self._controller: c.view_tap_note(sid),
                 )
             )
             row.add_widget(MDBoxLayout(size_hint_x=1))

@@ -125,7 +125,7 @@ class ParticipantDetailsDialog(QDialog):
         menu = QMenu(self)
         for tap in saved:
             mark = "✓ " if tap.done else "○ "
-            sub = menu.addMenu(f"{mark}{tap.reminder[:36]}")
+            sub = menu.addMenu(f"{mark}{tap.display_subject[:36]}")
             sub.addAction("Mark done" if not tap.done else "Mark undone").triggered.connect(
                 lambda _c=False, t=tap: get_tap_store().mark_done(t.save_id, not t.done)
             )

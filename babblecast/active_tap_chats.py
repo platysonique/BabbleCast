@@ -139,6 +139,14 @@ class ActiveTapChatStore:
             del self._by_id[tap_id]
             self.save()
 
+    def clear_messages(self, tap_id: str) -> None:
+        chat = self._by_id.get(tap_id)
+        if not chat:
+            return
+        chat.messages = []
+        chat.updated_at = time.time()
+        self.save()
+
     def tap_ids_for_server(
         self,
         link_id: str,
