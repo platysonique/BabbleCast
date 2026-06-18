@@ -27,7 +27,8 @@ def record_audio_granted() -> bool:
 
         return bool(check_permission(Permission.RECORD_AUDIO))
     except Exception:
-        return True
+        logger.exception("RECORD_AUDIO permission check failed — treating as denied")
+        return False
 
 
 def request_android_permissions() -> None:

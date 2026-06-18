@@ -189,8 +189,7 @@ class AndroidAudioRouter:
 
         if route == AUDIO_ROUTE_BLUETOOTH and mic_restart_cb is not None:
             # SCO connects asynchronously; restart mic so BT headset input is picked up.
-            for delay in (0.35, 0.9, 1.8):
-                threading.Timer(delay, mic_restart_cb).start()
+            _schedule_mic_restart(mic_restart_cb)
         return route
 
     def shutdown(self) -> None:
@@ -217,6 +216,26 @@ class AndroidAudioRouter:
 
 
 _router: AndroidAudioRouter | None = None
+_mic_restart_timer: threading.Timer | None = None
+
+
+def _schedule_mic_restart(mic_restart_cb: Callable[[], None]) -> None:
+    global _mic_restart_timer
+    if _mic_restart_timer is not None:
+        _mic_restart_timer.cancel()
+        _mic_restart_timer = None
+
+    def _fire() -> None:
+        global _mic_restart_timer
+        _mic_restart_timer = None
+        try:
+            mic_restart_cb()
+        except Exception:
+            logger.exception("Mic restart after BT route failed")
+
+    _mic_restart_timer = threading.Timer(0.9, _fire)
+    _mic_restart_timer.daemon = True
+    _mic_restart_timer.start()
 
 
 def get_android_router() -> AndroidAudioRouter:

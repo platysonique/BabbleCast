@@ -76,6 +76,7 @@ class BridgeManager:
         on_tap_end: Callable[[str, str], None] | None = None,
         on_local_mic_level: Callable[[float], None] | None = None,
         on_audio_route_changed: Callable[[str], None] | None = None,
+        on_audio_ready: Callable[[], None] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._on_link_connected = on_link_connected
@@ -92,6 +93,7 @@ class BridgeManager:
         self._on_tap_end = on_tap_end
         self._on_local_mic_level = on_local_mic_level
         self._on_audio_route_changed = on_audio_route_changed
+        self._on_audio_ready = on_audio_ready
         self._local_mic_level = 0.0
         self._last_ws_level_sent = 0.0
         self._pending_create_password: dict[str, tuple[str, str]] = {}
@@ -133,6 +135,7 @@ class BridgeManager:
         self._on_tap_end = None
         self._on_local_mic_level = None
         self._on_audio_route_changed = None
+        self._on_audio_ready = None
         for link_id in list(self._sessions.keys()):
             session = self._sessions.pop(link_id, None)
             if session:
@@ -159,13 +162,21 @@ class BridgeManager:
         for session in self._sessions.values():
             session.set_bridge_speaker(speaker)
 
+    @property
+    def audio_ready(self) -> bool:
+        return self._audio_started
+
+    @property
+    def audio_starting(self) -> bool:
+        return self._audio_starting
+
     def _ensure_audio(self) -> bool:
-        """Start shared mic/speaker. Returns False if hardware could not open."""
+        """Start shared mic/speaker. On Android, opening is async — returns False until ready."""
         if self._shutting_down or self._audio_started:
             return self._audio_started
         if platform_name() == "android":
             self._start_android_audio_async()
-            return True
+            return False
         return self._ensure_audio_sync()
 
     def _start_android_audio_async(self) -> None:
@@ -184,7 +195,15 @@ class BridgeManager:
                 def _finish() -> None:
                     with self._audio_lock:
                         self._audio_starting = False
-                    if not ok and self._on_error:
+                    if ok:
+                        self._attach_bridge_speaker_to_sessions()
+                        logger.info("Android audio ready (mic + speaker started)")
+                        if self._on_audio_ready:
+                            try:
+                                self._on_audio_ready()
+                            except RuntimeError:
+                                pass
+                    elif self._on_error:
                         for link_id in list(self._sessions.keys()):
                             self._on_error(
                                 link_id,
@@ -244,11 +263,19 @@ class BridgeManager:
 
     def _start_android_bt_watch(self) -> None:
         from babblecast.audio.android_bt_watch import start_bluetooth_watch
-        from babblecast.audio.android_routing import AUDIO_ROUTE_BLUETOOTH, AUDIO_ROUTE_SPEAKER
+        from babblecast.audio.android_routing import (
+            AUDIO_ROUTE_AUTO,
+            AUDIO_ROUTE_BLUETOOTH,
+            AUDIO_ROUTE_SPEAKER,
+            normalize_audio_route,
+        )
 
+        saved = normalize_audio_route(self._settings.android_audio_route)
+        auto_switch = saved in (AUDIO_ROUTE_AUTO, AUDIO_ROUTE_BLUETOOTH)
         start_bluetooth_watch(
             on_connected=lambda: self.set_audio_route(AUDIO_ROUTE_BLUETOOTH),
             on_disconnected=lambda: self.set_audio_route(AUDIO_ROUTE_SPEAKER),
+            auto_switch_on_connect=auto_switch,
         )
 
     def _notify_audio_route_changed(self, route: str) -> None:
@@ -596,11 +623,14 @@ class BridgeManager:
         return get_android_router().list_routes()
 
     def _restart_mic_if_running(self) -> None:
-        if self._mic and getattr(self._mic, "running", False):
-            try:
-                self._mic.restart()
-            except Exception:
-                logger.exception("Mic restart after route change failed")
+        def _do() -> None:
+            if self._mic and getattr(self._mic, "running", False):
+                try:
+                    self._mic.restart()
+                except Exception:
+                    logger.exception("Mic restart after route change failed")
+
+        _defer_main_thread(0, _do)
 
     def set_master_output_volume(self, volume: float) -> None:
         self._settings.output_volume = max(0.0, min(2.0, volume))

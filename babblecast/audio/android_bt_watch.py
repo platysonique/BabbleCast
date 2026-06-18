@@ -16,6 +16,7 @@ _watch_stop = threading.Event()
 _broadcast_receiver = None
 _callbacks: tuple[Callable[[], None], Callable[[], None]] | None = None
 _last_connected = False
+_auto_switch_on_connect = True
 
 
 def _dispatch(callback: Callable[[], None]) -> None:
@@ -41,11 +42,13 @@ def _notify_if_changed() -> None:
     if _callbacks is None:
         return
     if connected:
-        logger.info("Bluetooth headset connected — auto-switching audio route")
-        _dispatch(_callbacks[0])
+        if _auto_switch_on_connect:
+            logger.info("Bluetooth headset connected — auto-switching audio route")
+            _dispatch(_callbacks[0])
     else:
-        logger.info("Bluetooth headset disconnected — reverting audio route")
-        _dispatch(_callbacks[1])
+        if _auto_switch_on_connect:
+            logger.info("Bluetooth headset disconnected — reverting audio route")
+            _dispatch(_callbacks[1])
 
 
 def _poll_loop() -> None:
@@ -73,12 +76,12 @@ def _register_broadcast() -> object | None:
                     state = int(intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))
                     if state == connected_state:
                         global _last_connected
-                        if not _last_connected and _callbacks:
+                        if not _last_connected and _callbacks and _auto_switch_on_connect:
                             _last_connected = True
                             logger.info("Bluetooth connect broadcast — auto-switching audio route")
                             _dispatch(_callbacks[0])
                     elif state == disconnected_state:
-                        if _last_connected and _callbacks:
+                        if _last_connected and _callbacks and _auto_switch_on_connect:
                             _last_connected = False
                             logger.info("Bluetooth disconnect broadcast — reverting audio route")
                             _dispatch(_callbacks[1])
@@ -97,7 +100,6 @@ def _register_broadcast() -> object | None:
         filt = IntentFilter()
         filt.addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
         filt.addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-        filt.addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
         filt.addAction("android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED")
 
         receiver = BtRouteReceiver()
@@ -126,16 +128,19 @@ def _unregister_broadcast(receiver: object | None) -> None:
 def start_bluetooth_watch(
     on_connected: Callable[[], None],
     on_disconnected: Callable[[], None],
+    *,
+    auto_switch_on_connect: bool = True,
 ) -> None:
     """Begin watching for BT headset changes until ``stop_bluetooth_watch``."""
-    global _watch_thread, _callbacks, _broadcast_receiver, _last_connected
+    global _watch_thread, _callbacks, _broadcast_receiver, _last_connected, _auto_switch_on_connect
     with _watch_lock:
         stop_bluetooth_watch()
+        _auto_switch_on_connect = auto_switch_on_connect
         _callbacks = (on_connected, on_disconnected)
         from babblecast.audio.android_routing import get_android_router
 
         _last_connected = get_android_router().bluetooth_available()
-        if _last_connected:
+        if _last_connected and auto_switch_on_connect:
             _dispatch(on_connected)
         _watch_stop.clear()
         _watch_thread = threading.Thread(target=_poll_loop, daemon=True, name="bbc-bt-watch")

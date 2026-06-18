@@ -76,6 +76,7 @@ class BabbleController:
             on_audio_route_changed=lambda route: Clock.schedule_once(
                 lambda _dt, r=route: self._on_audio_route_changed(r)
             ),
+            on_audio_ready=lambda: Clock.schedule_once(lambda _dt: self._on_android_audio_ready()),
         )
         self._discovery = ServerDiscovery(
             on_update=lambda s: Clock.schedule_once(lambda _dt, sv=s: self._apply_servers(sv))
@@ -460,10 +461,23 @@ class BabbleController:
 
         if not is_android():
             return
+        if getattr(self._bridge, "audio_starting", False):
+            Clock.schedule_once(lambda _dt: self.ensure_self_audio_meter(), 0.25)
+            return
         if not record_audio_granted():
             request_android_permissions()
             return
-        self._bridge.ensure_input_monitoring()
+        if not self._bridge.ensure_input_monitoring():
+            if getattr(self._bridge, "audio_starting", False):
+                Clock.schedule_once(lambda _dt: self.ensure_self_audio_meter(), 0.25)
+            else:
+                self.set_status("Microphone unavailable — chat-only mode")
+
+    def _on_android_audio_ready(self) -> None:
+        if not self._alive():
+            return
+        self._sync_input_monitoring()
+        self.ensure_self_audio_meter()
 
     def _on_audio_route_changed(self, route: str) -> None:
         if not self._alive():
