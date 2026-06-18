@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from kivy.clock import Clock
 from kivymd.uix.dialog import MDDialog
 
+from babblecast.active_tap_chats import get_active_tap_chat_store
 from babblecast.client.bridge import BridgeManager
 from babblecast.client.room_controller import (
     chat_lines,
@@ -582,6 +583,16 @@ class BabbleController:
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
         self._sync_voice_foreground()
+        self._restore_active_taps(link_id)
+
+    def _restore_active_taps(self, link_id: str) -> None:
+        participants = self._presence.get(link_id, [])
+        restored = self._bridge.restore_active_tap_ids(link_id, participants)
+        self._tap_ids.update(restored)
+        if restored:
+            self.refresh_tap_notes_ui()
+            live = self.app.screen("live")
+            live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         if not self._alive():
@@ -593,6 +604,9 @@ class BabbleController:
         live.remove_connected_link(link_id)
         self._presence.pop(link_id, None)
         self._rooms.pop(link_id, None)
+        for key in list(self._tap_ids):
+            if key[0] == link_id:
+                self._tap_ids.pop(key, None)
         if self._active_link_id == link_id:
             remaining = live.connected_link_ids()
             self._active_link_id = remaining[0] if remaining else None
@@ -777,11 +791,61 @@ class BabbleController:
         from babblecast.taps import get_tap_store
 
         live = self.app.screen("live")
-        taps = sorted(get_tap_store().items, key=lambda t: t.created_at, reverse=True)
-        live.refresh_tap_notes(taps)
+        active = get_active_tap_chat_store().all_chats()
+        notes = sorted(get_tap_store().items, key=lambda t: t.created_at, reverse=True)
+        live.refresh_tap_notes(active, notes)
         panel = getattr(live, "detail_panel", None)
         if panel and panel._peer_open and panel._peer_client_id:
             panel._refresh_taps()
+
+    def clear_active_tap_chat(self, tap_id: str) -> None:
+        def do_clear(skip_future: bool) -> None:
+            if skip_future:
+                self._settings.skip_tap_delete_confirm = True
+                save_settings(self._settings)
+            link_id = self._link_id_for_tap(tap_id)
+            self._bridge.clear_active_tap_chat(tap_id, link_id=link_id)
+            for key in list(self._tap_ids):
+                if self._tap_ids.get(key) == tap_id:
+                    self._tap_ids.pop(key, None)
+            if self._tap_dialog and self._tap_id == tap_id:
+                self._tap_dialog.dismiss()
+                self._tap_dialog = None
+                self._tap_messages.clear()
+            self.refresh_tap_notes_ui()
+
+        if self._settings.skip_tap_delete_confirm:
+            do_clear(False)
+            return
+        from mobile.credentials_dialog import prompt_confirm_checkbox
+
+        prompt_confirm_checkbox(
+            "Clear tap chat",
+            "Clear this tap chat permanently?",
+            "Clear",
+            do_clear,
+            confirm_color=(0.97, 0.46, 0.56, 1),
+        )
+
+    def open_active_tap_chat(self, tap_id: str) -> None:
+        link_id = self._link_id_for_tap(tap_id)
+        if not link_id:
+            self.set_status("Connect to the same server to reopen this tap chat")
+            return
+        chat = get_active_tap_chat_store().get(tap_id)
+        if not chat:
+            return
+        self._tap_ids[(link_id, chat.peer_id)] = tap_id
+        self.open_tap_for_peer(link_id, chat.peer_id)
+
+    def _link_id_for_tap(self, tap_id: str) -> str | None:
+        chat = get_active_tap_chat_store().get(tap_id)
+        if not chat:
+            return None
+        for link in self._bridge.links:
+            if link.host == chat.link_host and link.port == chat.link_port:
+                return link.link_id
+        return None
 
     def _save_tap_conversation(
         self,
@@ -955,6 +1019,7 @@ class BabbleController:
         for p in participants:
             cid = str(p.get("client_id", ""))
             self._participant_by_composite[composite_participant_key(link_id, cid)] = dict(p)
+        self._restore_active_taps(link_id)
         live = self.app.screen("live")
         live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
         panel = getattr(live, "detail_panel", None)
@@ -1126,6 +1191,12 @@ class BabbleController:
         tap_input = MDTextField(hint_text="Tap message…", size_hint_y=None, height=dp(48))
         tap_log = MDLabel(text="", size_hint_y=None)
         tap_log.bind(texture_size=lambda _l, s: setattr(tap_log, "height", s[1]))
+        stored = get_active_tap_chat_store().get(tap_id)
+        if stored:
+            for msg in stored.messages:
+                line = f"[{msg.get('ts', '')}] {msg.get('name', '?')}: {msg.get('text', '')}\n"
+                tap_log.text += line
+                self._tap_messages.append(msg)
         content = MDBoxLayout(
             orientation="vertical",
             spacing=dp(8),
@@ -1144,7 +1215,6 @@ class BabbleController:
         def _finish_simple() -> None:
             if self._tap_dialog:
                 self._tap_dialog.dismiss()
-            self._bridge.end_tap(link_id, tap_id)
             self._tap_messages.clear()
             self._tap_dialog = None
             self.refresh_tap_notes_ui()
@@ -1233,9 +1303,13 @@ class BabbleController:
     def _on_tap_end(self, link_id: str, tap_id: str) -> None:
         if not self._alive():
             return
+        for key in list(self._tap_ids):
+            if self._tap_ids.get(key) == tap_id:
+                self._tap_ids.pop(key, None)
         if self._tap_dialog and self._tap_id == tap_id and self._tap_link_id == link_id:
             self._tap_dialog.dismiss()
             self._tap_dialog = None
             self._tap_messages.clear()
+        self.refresh_tap_notes_ui()
 
 

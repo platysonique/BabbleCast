@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from babblecast.active_tap_chats import get_active_tap_chat_store
 from babblecast.client.bridge import BridgeManager
 from babblecast.client.qt.confirm_dialog import ConfirmCheckboxDialog
 from babblecast.config import get_settings, save_settings
@@ -76,12 +77,26 @@ class TapChatDialog(QDialog):
 
         self._bridge.open_tap(link_id, tap_id)
         self._bridge.clear_pending_tap(link_id, peer_id)
+        self._load_persisted_messages()
+
+    def _load_persisted_messages(self) -> None:
+        chat = get_active_tap_chat_store().get(self._tap_id)
+        if not chat:
+            return
+        self._messages = list(chat.messages)
+        for msg in self._messages:
+            name = msg.get("name", "?")
+            text = msg.get("text", "")
+            ts = msg.get("ts", "")
+            self._log.append(f"<b>[{ts}] {name}</b>: {text}")
 
     def append_message(self, data: dict) -> None:
         name = data.get("name", "?")
         text = data.get("text", "")
         ts = datetime.now().strftime("%H:%M")
-        self._messages.append({"name": name, "text": text, "ts": ts})
+        entry = {"name": name, "text": text, "ts": ts}
+        if not self._messages or self._messages[-1] != entry:
+            self._messages.append(entry)
         self._log.append(f"<b>[{ts}] {name}</b>: {text}")
 
     def _send(self) -> None:
@@ -142,7 +157,6 @@ class TapChatDialog(QDialog):
                             )
                         )
                         self._saved_on_close = True
-        self._bridge.end_tap(self._link_id, self._tap_id)
         self._log.clear()
         self._messages.clear()
         super().closeEvent(event)

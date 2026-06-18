@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from babblecast.active_tap_chats import get_active_tap_chat_store
 from babblecast.audio.factory import create_mic, create_speaker, platform_name
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.client.session import ClientSession
@@ -310,7 +311,7 @@ class BridgeManager:
             on_disconnected=lambda reason, lid=link_id: self._handle_disconnect(lid, reason),
             on_error=lambda m, ec, lid=link_id: self._on_error and self._on_error(lid, m, ec),
             on_tap_received=lambda d, lid=link_id: self._handle_tap_received(lid, d),
-            on_tap_chat=lambda d, lid=link_id: self._on_tap_chat and self._on_tap_chat(lid, d),
+            on_tap_chat=lambda d, lid=link_id: self._handle_tap_chat(lid, d),
             on_tap_open=lambda tid, lid=link_id: self._handle_tap_open(lid, tid),
             on_tap_end=lambda tid, lid=link_id: self._handle_tap_end(lid, tid),
             listen_muted_getter=lambda lid=link_id: (
@@ -373,16 +374,73 @@ class BridgeManager:
         if link and not data.get("self_sent"):
             from_id = str(data.get("from_id", ""))
             link.pending_taps.add(from_id)
+        tap_id = str(data.get("tap_id", ""))
+        if tap_id and link:
+            from_id = str(data.get("from_id", ""))
+            target_id = str(data.get("target_id", ""))
+            from_name = str(data.get("from_name", "?"))
+            target_name = str(data.get("target_name", "?"))
+            peer_id = target_id if data.get("self_sent") else from_id
+            peer_name = target_name if data.get("self_sent") else from_name
+            get_active_tap_chat_store().record_received(
+                tap_id=tap_id,
+                link_host=link.host,
+                link_port=link.port,
+                peer_id=peer_id,
+                peer_name=peer_name,
+                server_label=link.label,
+            )
         if self._on_tap_received:
             self._on_tap_received(link_id, data)
+
+    def _handle_tap_chat(self, link_id: str, data: dict[str, Any]) -> None:
+        tap_id = str(data.get("tap_id", ""))
+        if tap_id:
+            get_active_tap_chat_store().append_message(
+                tap_id,
+                name=str(data.get("name", "?")),
+                text=str(data.get("text", "")),
+            )
+        if self._on_tap_chat:
+            self._on_tap_chat(link_id, data)
 
     def _handle_tap_open(self, link_id: str, tap_id: str) -> None:
         if self._on_tap_open:
             self._on_tap_open(link_id, tap_id)
 
     def _handle_tap_end(self, link_id: str, tap_id: str) -> None:
+        get_active_tap_chat_store().remove(tap_id)
         if self._on_tap_end:
             self._on_tap_end(link_id, tap_id)
+
+    def clear_active_tap_chat(self, tap_id: str, *, link_id: str | None = None) -> None:
+        """End tap on server when connected and remove persisted thread."""
+        store = get_active_tap_chat_store()
+        chat = store.get(tap_id)
+        target_link = link_id
+        if not target_link and chat:
+            for lid, link in self._links.items():
+                if link.host == chat.link_host and link.port == chat.link_port:
+                    target_link = lid
+                    break
+        if target_link and self._sessions.get(target_link):
+            self.end_tap(target_link, tap_id)
+        store.remove(tap_id)
+
+    def restore_active_tap_ids(
+        self,
+        link_id: str,
+        participants: list[dict[str, Any]] | None = None,
+    ) -> dict[tuple[str, str], str]:
+        link = self._links.get(link_id)
+        if not link:
+            return {}
+        return get_active_tap_chat_store().tap_ids_for_server(
+            link_id,
+            host=link.host,
+            port=link.port,
+            participants=participants,
+        )
 
     def disconnect(self, link_id: str) -> None:
         session = self._sessions.get(link_id)

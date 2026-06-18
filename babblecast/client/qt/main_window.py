@@ -54,6 +54,7 @@ from babblecast.constants import (
     UI_SUNFLOWER,
     composite_participant_key,
 )
+from babblecast.active_tap_chats import get_active_tap_chat_store
 from babblecast.taps import SavedTap, get_tap_store
 from babblecast.network import is_local_host, is_valid_connect_target
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
@@ -267,6 +268,8 @@ class MainWindow(QMainWindow):
             on_add=lambda: self._prompt_add_tap_note(),
             on_delete=self._delete_tap_note,
             on_open=self._open_tap_note_from_list,
+            on_open_active=self._open_active_tap_chat,
+            on_clear_active=self._clear_active_tap_chat,
         )
         chat_layout.addWidget(self._tap_notes)
         chat_input_row = QHBoxLayout()
@@ -564,6 +567,20 @@ class MainWindow(QMainWindow):
         if w and link:
             w.set_listen_muted(link.listen_muted)
             w.set_mic_muted(link.mic_muted)
+        self._restore_active_taps(link_id)
+
+    def _restore_active_taps(self, link_id: str) -> None:
+        participants = self._presence_by_link.get(link_id, [])
+        restored = self._bridge.restore_active_tap_ids(link_id, participants)
+        for key, tap_id in restored.items():
+            self._tap_ids[key] = tap_id
+            peer_id = key[1]
+            chat = get_active_tap_chat_store().get(tap_id)
+            if chat:
+                self._peer_names[key] = chat.peer_name
+        if restored:
+            self._tap_notes.refresh()
+            self._rebuild_participants()
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         self._remove_link_widget(link_id)
@@ -716,6 +733,7 @@ class MainWindow(QMainWindow):
 
     def _on_presence(self, link_id: str, _room_id: str, participants: list[dict]) -> None:
         self._presence_by_link[link_id] = participants
+        self._restore_active_taps(link_id)
         self._rebuild_participants()
 
     def _rebuild_participants(self) -> None:
@@ -1047,6 +1065,58 @@ class MainWindow(QMainWindow):
         dlg = self._tap_dialogs.pop(key, None)
         if dlg:
             dlg.close()
+        for tap_key in list(self._tap_ids):
+            if self._tap_ids.get(tap_key) == tap_id:
+                self._tap_ids.pop(tap_key, None)
+        self._refresh_tap_notes_ui()
+
+    def _find_link_for_chat(self, tap_id: str) -> tuple[str, str] | None:
+        chat = get_active_tap_chat_store().get(tap_id)
+        if not chat:
+            return None
+        for link_id in self._link_widgets:
+            link = self._bridge.get_link(link_id)
+            if link and link.host == chat.link_host and link.port == chat.link_port:
+                return link_id, chat.peer_id
+        return None
+
+    def _open_active_tap_chat(self, tap_id: str) -> None:
+        resolved = self._find_link_for_chat(tap_id)
+        if not resolved:
+            QMessageBox.information(
+                self,
+                "Tap chat",
+                "Connect to the same server to reopen this tap chat.",
+            )
+            return
+        link_id, peer_id = resolved
+        self._tap_ids[(link_id, peer_id)] = tap_id
+        self._open_tap_for_peer(link_id, peer_id)
+
+    def _clear_active_tap_chat(self, tap_id: str) -> None:
+        if not self._settings.skip_tap_delete_confirm:
+            dlg = ConfirmCheckboxDialog(
+                "Clear tap chat",
+                "Clear this tap chat permanently?",
+                confirm_label="Clear",
+                confirm_style="color: #f7768e; font-weight: 600;",
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dlg.skip_future:
+                self._settings.skip_tap_delete_confirm = True
+                save_settings(self._settings)
+        resolved = self._find_link_for_chat(tap_id)
+        link_id = resolved[0] if resolved else None
+        self._bridge.clear_active_tap_chat(tap_id, link_id=link_id)
+        for key in list(self._tap_ids):
+            if self._tap_ids.get(key) == tap_id:
+                self._tap_ids.pop(key, None)
+        key = (link_id, tap_id) if link_id else None
+        if key and key in self._tap_dialogs:
+            self._tap_dialogs.pop(key).close()
+        self._refresh_tap_notes_ui()
 
     def _reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
         for tap in get_tap_store().items:

@@ -444,18 +444,37 @@ class LiveScreen(MDScreen):
         assert hasattr(app, "controller")
         app.controller.prompt_add_tap_note()
 
-    def refresh_tap_notes(self, taps) -> None:
+    def refresh_tap_notes(self, active_chats, saved_notes) -> None:
         from kivymd.uix.button import MDFlatButton, MDIconButton
         from kivymd.uix.label import MDLabel
 
         self._tap_notes_box.clear_widgets()
-        if not taps:
+        if not active_chats and not saved_notes:
             self._tap_notes_box.add_widget(
                 MDLabel(text="(no tap notes yet)", theme_text_color="Custom", text_color=MUTED, font_style="Caption")
             )
             return
         app = MDApp.get_running_app()
-        for tap in taps:
+        for chat in active_chats:
+            row = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+            peer = chat.peer_name or "?"
+            row.add_widget(
+                MDFlatButton(
+                    text=f"💬 {chat.preview()[:36]} · {peer}",
+                    on_release=lambda *_t, tid=chat.tap_id: app.controller.open_active_tap_chat(tid),
+                )
+            )
+            row.add_widget(MDBoxLayout(size_hint_x=1))
+            row.add_widget(
+                MDIconButton(
+                    icon="close",
+                    theme_text_color="Custom",
+                    text_color=(0.97, 0.46, 0.56, 1),
+                    on_release=lambda *_t, tid=chat.tap_id: app.controller.clear_active_tap_chat(tid),
+                )
+            )
+            self._tap_notes_box.add_widget(row)
+        for tap in saved_notes:
             row = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
             mark = "✓" if tap.done else "○"
             peer = tap.peer_name or "Note"
