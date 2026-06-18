@@ -3,14 +3,9 @@
 SERVICE_TYPE = "_babblecast._tcp.local."
 LOCAL_DOMAIN = "babblecast.local"
 
-# BabbleCast virtual LAN — always 11.2.x.x; custom hosts pick third/fourth octets.
-# Auto allocation (host dialog unchecked) always uses 11.2.9.x for predictable automation.
-# Self-connect on the same machine still uses 127.0.0.1.
-BABBLECAST_FIXED_OCTETS = (11, 2)
-BABBLECAST_AUTO_DOMAIN = 9
-
 DEFAULT_WS_PORT = 9513
 DEFAULT_UDP_PORT = 9514
+DISCOVERY_BEACON_PORT = 9515
 SAMPLE_RATE = 48000
 CHANNELS = 1
 FRAME_SAMPLES = 960  # 20 ms @ 48 kHz
@@ -37,6 +32,5 @@ def babblecast_subnet_prefix() -> str:
 
 
 def babblecast_subnet_example_host(last_octet: int = 10, domain: int = 9) -> str:
-    from babblecast.address import format_babblecast_ip
-
-    return format_babblecast_ip(domain, last_octet)
+    """Example LAN IP for UI hints."""
+    return f"192.168.{domain}.{last_octet}"

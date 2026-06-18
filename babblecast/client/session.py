@@ -17,6 +17,7 @@ from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, FRAME_BYTES, composite_participant_key
 from babblecast.config import UserSettings, get_settings, save_settings
+from babblecast.network import is_private_lan_ipv4
 from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id, parse_error_code
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class ClientSession:
         self._jitter: dict[str, VoiceJitterBuffer] = {}
         self._jitter_lock = threading.Lock()
         self._codec_lock = threading.Lock()
+        self._rooms: list[dict[str, Any]] = []
 
     @property
     def link_id(self) -> str:
@@ -94,6 +96,16 @@ class ClientSession:
     @property
     def client_id(self) -> str:
         return self._client_id
+
+    @property
+    def rooms(self) -> list[dict[str, Any]]:
+        return list(self._rooms)
+
+    def room_by_id(self, room_id: str) -> dict[str, Any] | None:
+        for room in self._rooms:
+            if str(room.get("room_id", "")) == room_id:
+                return room
+        return None
 
     @property
     def room_id(self) -> str | None:
@@ -251,8 +263,9 @@ class ClientSession:
                 self._on_chat(data)
             return
         if mtype == MsgType.ROOMS:
+            self._rooms = list(data.get("rooms", []))
             if self._on_rooms:
-                self._on_rooms(list(data.get("rooms", [])))
+                self._on_rooms(self._rooms)
             return
         if mtype == MsgType.JOINED:
             self._room_id = str(data.get("room_id", ""))
@@ -389,12 +402,14 @@ class ClientSession:
             self.disconnect()
         self._user_disconnect = False
         self._welcomed = False
-        self._host = host
+        self._host = host.strip()
         self._ws_port = ws_port
         self._password = password
         if not self.is_bridge:
-            self._settings.last_server_host = host
+            self._settings.last_server_host = self._host
             self._settings.last_server_port = ws_port
+            if is_private_lan_ipv4(self._host):
+                self._settings.last_server_underlay = self._host
             save_settings(self._settings)
         self._setup_audio()
         self._running = True
@@ -484,14 +499,20 @@ class ClientSession:
     def end_tap(self, tap_id: str) -> None:
         self._send_async(encode_msg(MsgType.TAP_END, tap_id=tap_id))
 
-    def create_room(self, name: str) -> None:
-        self._send_async(encode_msg(MsgType.CREATE_ROOM, name=name))
+    def create_room(self, name: str, *, password: str = "") -> None:
+        payload: dict[str, Any] = {"name": name}
+        if password.strip():
+            payload["password"] = password.strip()
+        self._send_async(encode_msg(MsgType.CREATE_ROOM, **payload))
 
     def delete_room(self, room_id: str) -> None:
         self._send_async(encode_msg(MsgType.DELETE_ROOM, room_id=room_id))
 
-    def join_room(self, room_id: str) -> None:
-        self._send_async(encode_msg(MsgType.JOIN_ROOM, room_id=room_id))
+    def join_room(self, room_id: str, *, password: str = "") -> None:
+        payload: dict[str, Any] = {"room_id": room_id}
+        if password.strip():
+            payload["password"] = password.strip()
+        self._send_async(encode_msg(MsgType.JOIN_ROOM, **payload))
 
     def request_rooms(self) -> None:
         self._send_async(encode_msg(MsgType.ROOM_LIST))

@@ -17,14 +17,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from babblecast.address import (
-    allocate_babblecast_ip,
-    babblecast_auto_subnet,
-    babblecast_prefix,
-    validate_address_suffix,
-)
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import MAX_NAME_LEN
+from babblecast.constants import MAX_NAME_LEN, MAX_ROOM_NAME_LEN
 
 
 def _clean_name(text: str) -> str:
@@ -81,13 +75,10 @@ class ConnectCredentialsDialog(QDialog):
 
 
 class HostCredentialsDialog(QDialog):
-    """Ask server name, display name, optional custom address, and password when hosting."""
+    """Ask server name, display name, and optional password when hosting."""
 
     def __init__(self, default_server: str, default_name: str, parent=None) -> None:
         super().__init__(parent)
-        self._resolved_ip = ""
-        settings = get_settings()
-        prefix = babblecast_prefix()
         self.setWindowTitle("Host server")
         layout = QFormLayout(self)
         self._server = QLineEdit(default_server or default_name or socket.gethostname())
@@ -96,18 +87,10 @@ class HostCredentialsDialog(QDialog):
         self._name = QLineEdit(default_name or socket.gethostname())
         self._name.setPlaceholderText("Your display name on this server")
         layout.addRow("Your name", self._name)
-        self._custom = QCheckBox("Custom BabbleCast address")
-        self._custom.setChecked(settings.babblecast_custom_address)
-        self._custom.toggled.connect(self._on_custom_toggled)
-        layout.addRow(self._custom)
-        self._suffix = QLineEdit(settings.babblecast_address_suffix)
-        self._suffix.setPlaceholderText(f"After {prefix}. — e.g. 9 or 9.10")
-        self._suffix.setEnabled(settings.babblecast_custom_address)
-        layout.addRow("Address suffix", self._suffix)
         layout.addRow(
             QLabel(
-                f"Leave custom off for an auto free address in {babblecast_auto_subnet()}. "
-                "Custom: pick domain (e.g. 42) or full host (42.10)."
+                "Your PC's LAN address is advertised automatically — "
+                "others find you via Discover or name.babblecast.local."
             )
         )
         self._protect = QCheckBox("Password protect")
@@ -126,11 +109,6 @@ class HostCredentialsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
-    def _on_custom_toggled(self, checked: bool) -> None:
-        self._suffix.setEnabled(checked)
-        if not checked:
-            self._suffix.clear()
-
     def _on_protect_toggled(self, checked: bool) -> None:
         self._password.setEnabled(checked)
         if not checked:
@@ -146,22 +124,9 @@ class HostCredentialsDialog(QDialog):
         if self._protect.isChecked() and not self._password.text():
             QMessageBox.warning(self, "BabbleCast", "Enter a password or uncheck Password protect.")
             return
-        custom = self._custom.isChecked()
-        suffix = self._suffix.text().strip()
-        if custom:
-            err = validate_address_suffix(suffix)
-            if err:
-                QMessageBox.warning(self, "BabbleCast", err)
-                return
-        try:
-            self._resolved_ip = allocate_babblecast_ip(custom=custom, suffix=suffix)
-        except (ValueError, RuntimeError) as exc:
-            QMessageBox.warning(self, "BabbleCast", str(exc))
-            return
         settings = get_settings()
-        settings.babblecast_ip = self._resolved_ip
-        settings.babblecast_custom_address = custom
-        settings.babblecast_address_suffix = suffix if custom else ""
+        settings.hosted_server_name = self._server.text().strip()[:MAX_NAME_LEN]
+        settings.display_name = _clean_name(self._name.text())
         save_settings(settings)
         self.accept()
 
@@ -178,10 +143,6 @@ class HostCredentialsDialog(QDialog):
         if self._protect.isChecked():
             return self._password.text()
         return ""
-
-    @property
-    def babblecast_ip(self) -> str:
-        return self._resolved_ip
 
 
 class DisconnectConfirmDialog(QDialog):
@@ -207,3 +168,86 @@ class DisconnectConfirmDialog(QDialog):
     @property
     def skip_future_confirms(self) -> bool:
         return self._dont_ask.isChecked()
+
+
+class RoomCreateDialog(QDialog):
+    """Create a room with optional password protection."""
+
+    def __init__(self, default_name: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Create room")
+        layout = QFormLayout(self)
+        self._name = QLineEdit(default_name)
+        self._name.setPlaceholderText("Room name")
+        layout.addRow("Name", self._name)
+        self._protect = QCheckBox("Password protect this room")
+        self._protect.toggled.connect(self._on_protect_toggled)
+        layout.addRow(self._protect)
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password.setPlaceholderText("Room password")
+        self._password.setEnabled(False)
+        layout.addRow("Password", self._password)
+        layout.addRow(
+            QLabel("Only you can delete a room you create. Others need the password to enter.")
+        )
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _on_protect_toggled(self, checked: bool) -> None:
+        self._password.setEnabled(checked)
+        if not checked:
+            self._password.clear()
+
+    def _accept(self) -> None:
+        if not self._name.text().strip():
+            QMessageBox.warning(self, "BabbleCast", "Enter a room name.")
+            return
+        if self._protect.isChecked() and not self._password.text():
+            QMessageBox.warning(self, "BabbleCast", "Enter a room password or uncheck protection.")
+            return
+        self.accept()
+
+    @property
+    def room_name(self) -> str:
+        return self._name.text().strip()[:MAX_ROOM_NAME_LEN] or "Room"
+
+    @property
+    def room_password(self) -> str:
+        if self._protect.isChecked():
+            return self._password.text()
+        return ""
+
+
+class RoomPasswordDialog(QDialog):
+    """Ask for a protected room's password before joining."""
+
+    def __init__(self, room_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Room password")
+        layout = QFormLayout(self)
+        layout.addRow("Room", QLineEdit(room_name, readOnly=True))
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password.setPlaceholderText("Room password")
+        layout.addRow("Password", self._password)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _accept(self) -> None:
+        if not self._password.text():
+            QMessageBox.warning(self, "BabbleCast", "Enter the room password.")
+            return
+        self.accept()
+
+    @property
+    def password(self) -> str:
+        return self._password.text()

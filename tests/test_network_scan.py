@@ -1,22 +1,35 @@
-"""LAN subnet scan for BabbleCast servers."""
+"""LAN discovery via UDP beacon and mesh-aware probes."""
 
-from babblecast.network_scan import lan_subnet_scan_targets, scan_local_subnets_for_servers
+from unittest.mock import MagicMock
 
-
-def test_lan_subnet_scan_targets_includes_local_prefix() -> None:
-    targets = lan_subnet_scan_targets()
-    assert targets
-    assert any(ip.startswith("127.") is False for ip in targets)
+from babblecast.network_scan import LanServerHit, discover_lan_servers
 
 
-def test_scan_local_subnets_for_servers_mock(monkeypatch) -> None:
+def test_discover_lan_servers_from_beacon(monkeypatch) -> None:
     monkeypatch.setattr(
-        "babblecast.network_scan.lan_subnet_scan_targets",
-        lambda: ["192.168.1.50", "192.168.1.99"],
+        "babblecast.discovery_beacon.request_beacons",
+        lambda **_k: [("Test Studio", "192.168.1.141", 9513)],
+    )
+    monkeypatch.setattr("babblecast.mesh_probe.mesh_unicast_discover_targets", lambda: [])
+    monkeypatch.setattr("babblecast.network.saved_lan_hosts", lambda: [])
+    monkeypatch.setattr("babblecast.transport_probe.tcp_port_open", lambda *_a, **_k: True)
+
+    found = discover_lan_servers()
+    assert found == [LanServerHit(host="192.168.1.141", name="Test Studio", ws_port=9513)]
+
+
+def test_discover_lan_servers_dedupes_by_ip(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "babblecast.discovery_beacon.request_beacons",
+        lambda **_k: [("Test", "192.168.1.50", 9513)],
     )
     monkeypatch.setattr(
-        "babblecast.network_scan._port_open",
-        lambda ip, *_a, **_k: ip == "192.168.1.50",
+        "babblecast.mesh_probe.mesh_unicast_discover_targets",
+        lambda: ["192.168.1.50"],
     )
-    found = scan_local_subnets_for_servers()
-    assert found == ["192.168.1.50"]
+    monkeypatch.setattr("babblecast.network.saved_lan_hosts", lambda: [])
+    monkeypatch.setattr("babblecast.transport_probe.tcp_port_open", lambda *_a, **_k: True)
+
+    found = discover_lan_servers()
+    assert len(found) == 1
+    assert found[0].host == "192.168.1.50"

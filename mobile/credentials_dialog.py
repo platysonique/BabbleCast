@@ -13,14 +13,8 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.uix.label import MDLabel
 from kivymd.uix.textfield import MDTextField
 
-from babblecast.address import (
-    allocate_babblecast_ip,
-    babblecast_auto_subnet,
-    babblecast_prefix,
-    validate_address_suffix,
-)
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import MAX_NAME_LEN
+from babblecast.constants import MAX_NAME_LEN, MAX_ROOM_NAME_LEN
 
 _ERROR_COLOR = (0.97, 0.46, 0.56, 1)
 
@@ -78,7 +72,8 @@ def prompt_connect(
         MDTextField(text=f"{server_label}", readonly=True, size_hint_y=None, height=dp(44))
     )
     body.add_widget(name_field)
-    body.add_widget(password_field)
+    if password_required:
+        body.add_widget(password_field)
     body.add_widget(error_label)
     holder: list[MDDialog] = []
 
@@ -87,7 +82,7 @@ def prompt_connect(
 
     def accept(*_args) -> None:
         name = _clean_name(name_field.text)
-        pwd = password_field.text if password_field.text.strip() else ""
+        pwd = password_field.text if password_required and password_field.text.strip() else ""
         if password_required and not pwd:
             _set_error(error_label, "Enter the server password.")
             return
@@ -111,10 +106,9 @@ def prompt_connect(
     dialog.open()
 
 
-def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
-    """Returns (server_name, display_name, password, babblecast_ip) via callback."""
+def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
+    """Returns (server_name, display_name, password) via callback."""
     settings = get_settings()
-    prefix = babblecast_prefix()
     server_field = MDTextField(
         hint_text="Server name (Discover)",
         text=settings.hosted_server_name or settings.display_name or socket.gethostname(),
@@ -124,21 +118,6 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
     name_field = MDTextField(
         hint_text="Your display name",
         text=settings.display_name or socket.gethostname(),
-        size_hint_y=None,
-        height=dp(48),
-    )
-    custom_row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
-    custom_cb = MDCheckbox(
-        size_hint=(None, None),
-        size=(dp(32), dp(32)),
-        active=settings.babblecast_custom_address,
-    )
-    custom_row.add_widget(custom_cb)
-    custom_row.add_widget(MDLabel(text="Custom BabbleCast address", size_hint_x=1))
-    suffix_field = MDTextField(
-        hint_text=f"After {prefix}. — e.g. 9 or 9.10",
-        text=settings.babblecast_address_suffix,
-        disabled=not settings.babblecast_custom_address,
         size_hint_y=None,
         height=dp(48),
     )
@@ -154,36 +133,28 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
         height=dp(48),
     )
 
-    def on_custom(_instance, value: bool) -> None:
-        suffix_field.disabled = not value
-        if not value:
-            suffix_field.text = ""
-
     def on_protect(_instance, value: bool) -> None:
         password_field.disabled = not value
         if not value:
             password_field.text = ""
 
-    custom_cb.bind(active=on_custom)
     protect_cb.bind(active=on_protect)
 
     error_label = _error_label()
     body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
     body.add_widget(server_field)
     body.add_widget(name_field)
-    body.add_widget(custom_row)
-    body.add_widget(suffix_field)
-    body.add_widget(protect_row)
-    body.add_widget(password_field)
     body.add_widget(
         MDLabel(
-            text=f"Auto: picks a free {babblecast_auto_subnet()} address. Custom: you choose domain/host octets.",
+            text="Your phone's LAN address is advertised automatically on this Wi‑Fi.",
             theme_text_color="Custom",
             text_color=(0.6, 0.65, 0.75, 1),
             font_style="Caption",
             size_hint_y=None,
         )
     )
+    body.add_widget(protect_row)
+    body.add_widget(password_field)
     body.add_widget(error_label)
     holder: list[MDDialog] = []
 
@@ -195,32 +166,17 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
         if not server:
             _set_error(error_label, "Enter a server name.")
             return
-        custom = bool(custom_cb.active)
-        suffix = suffix_field.text.strip()
-        if custom:
-            err = validate_address_suffix(suffix)
-            if err:
-                _set_error(error_label, err)
-                return
         name = _clean_name(name_field.text)
         pwd = password_field.text if protect_cb.active else ""
         if protect_cb.active and not pwd.strip():
             _set_error(error_label, "Enter a password or turn off protection.")
             return
-        try:
-            bbc_ip = allocate_babblecast_ip(custom=custom, suffix=suffix)
-        except (ValueError, RuntimeError) as exc:
-            _set_error(error_label, str(exc))
-            return
         _set_error(error_label, "")
         settings.hosted_server_name = server
-        settings.babblecast_ip = bbc_ip
-        settings.babblecast_custom_address = custom
-        settings.babblecast_address_suffix = suffix if custom else ""
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        on_ok(server, name, pwd, bbc_ip)
+        on_ok(server, name, pwd)
 
     dialog = MDDialog(
         title="Host server",
@@ -232,6 +188,121 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
         ],
     )
     holder.append(dialog)
+    dialog.open()
+
+
+def prompt_create_room(default_name: str, on_ok: Callable[[str, str], None]) -> None:
+    """Returns (room_name, password) — password empty when not protected."""
+    name_field = MDTextField(
+        hint_text="Room name",
+        text=default_name,
+        size_hint_y=None,
+        height=dp(48),
+    )
+    protect_row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
+    protect_cb = MDCheckbox(size_hint=(None, None), size=(dp(32), dp(32)))
+    protect_row.add_widget(protect_cb)
+    protect_row.add_widget(MDLabel(text="Password protect", size_hint_x=1))
+    password_field = MDTextField(
+        hint_text="Room password",
+        password=True,
+        disabled=True,
+        size_hint_y=None,
+        height=dp(48),
+    )
+
+    def on_protect(_instance, value: bool) -> None:
+        password_field.disabled = not value
+        if not value:
+            password_field.text = ""
+
+    protect_cb.bind(active=on_protect)
+
+    error_label = _error_label()
+    body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+    body.add_widget(name_field)
+    body.add_widget(
+        MDLabel(
+            text="Only you can delete a room you create. Others need the password to enter.",
+            theme_text_color="Custom",
+            text_color=(0.6, 0.65, 0.75, 1),
+            font_style="Caption",
+            size_hint_y=None,
+        )
+    )
+    body.add_widget(protect_row)
+    body.add_widget(password_field)
+    body.add_widget(error_label)
+    holder: list[MDDialog] = []
+
+    def dismiss() -> None:
+        holder[0].dismiss()
+
+    def accept(*_args) -> None:
+        name = name_field.text.strip()[:MAX_ROOM_NAME_LEN]
+        if not name:
+            _set_error(error_label, "Enter a room name.")
+            return
+        pwd = password_field.text if protect_cb.active else ""
+        if protect_cb.active and not pwd.strip():
+            _set_error(error_label, "Enter a password or turn off protection.")
+            return
+        _set_error(error_label, "")
+        dismiss()
+        on_ok(name, pwd if protect_cb.active else "")
+
+    dialog = MDDialog(
+        title="Create room",
+        type="custom",
+        content_cls=body,
+        buttons=[
+            MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
+            MDRaisedButton(text="Create", on_release=accept),
+        ],
+    )
+    holder.append(dialog)
+    dialog.open()
+
+
+def prompt_room_password(room_name: str, on_ok: Callable[[str], None]) -> None:
+    password_field = MDTextField(
+        hint_text="Room password",
+        password=True,
+        size_hint_y=None,
+        height=dp(48),
+    )
+    error_label = _error_label()
+    body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+    body.add_widget(
+        MDTextField(text=room_name, readonly=True, size_hint_y=None, height=dp(44))
+    )
+    body.add_widget(password_field)
+    body.add_widget(error_label)
+    holder: list[MDDialog] = []
+
+    def dismiss() -> None:
+        holder[0].dismiss()
+
+    def accept(*_args) -> None:
+        pwd = password_field.text.strip()
+        if not pwd:
+            _set_error(error_label, "Enter the room password.")
+            return
+        _set_error(error_label, "")
+        dismiss()
+        on_ok(pwd)
+
+    dialog = MDDialog(
+        title="Room password",
+        type="custom",
+        content_cls=body,
+        buttons=[
+            MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
+            MDRaisedButton(text="Join", on_release=accept),
+        ],
+    )
+    holder.append(dialog)
+    password_field.bind(on_text_validate=accept)
     dialog.open()
 
 

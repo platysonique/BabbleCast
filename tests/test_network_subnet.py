@@ -1,6 +1,7 @@
 """BabbleCast virtual addressing (11.2.x.x)."""
 
 from babblecast.address import (
+    BABBLECAST_AUTO_DOMAIN,
     allocate_babblecast_ip,
     babblecast_auto_subnet,
     babblecast_prefix,
@@ -9,7 +10,6 @@ from babblecast.address import (
     parse_address_suffix,
     validate_address_suffix,
 )
-from babblecast.constants import BABBLECAST_AUTO_DOMAIN
 
 
 def test_babblecast_prefix() -> None:

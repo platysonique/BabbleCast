@@ -254,3 +254,95 @@ def test_udp_source_must_match_registered_addr() -> None:
     fresh.udp_addr = ("127.0.0.1", 7000)
     assert not hub._register_udp_source(fresh, ("127.0.0.1", 7001))
     assert hub._register_udp_source(fresh, ("192.168.1.9", 7000))
+
+
+@pytest.mark.asyncio
+async def test_protected_room_requires_password_to_join() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18779, udp_port=18780, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18779") as ws_host:
+            await ws_host.send(encode_msg(MsgType.HELLO, name="Boss"))
+            welcome = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+            host_id = welcome["client_id"]
+
+            await ws_host.send(encode_msg(MsgType.CREATE_ROOM, name="Private", password="secret"))
+            private_room = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+                if msg.get("type") == MsgType.ROOM_CREATED.value:
+                    private_room = msg["room"]["room_id"]
+                    assert msg["room"]["password_protected"] is True
+                    assert msg["room"]["creator_id"] == host_id
+                    break
+            assert private_room
+
+            async with websockets.connect("ws://127.0.0.1:18779") as ws_guest:
+                await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
+                decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+
+                await ws_guest.send(encode_msg(MsgType.JOIN_ROOM, room_id=private_room))
+                err = None
+                for _ in range(12):
+                    msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                    if msg.get("type") == MsgType.ERROR.value:
+                        err = msg
+                        break
+                assert err is not None
+                assert err.get("error_code") == "room_password_required"
+
+                await ws_guest.send(
+                    encode_msg(MsgType.JOIN_ROOM, room_id=private_room, password="nope")
+                )
+                err = None
+                for _ in range(12):
+                    msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                    if msg.get("type") == MsgType.ERROR.value:
+                        err = msg
+                        break
+                assert err is not None
+                assert err.get("error_code") == "room_password_wrong"
+
+                await ws_guest.send(
+                    encode_msg(MsgType.JOIN_ROOM, room_id=private_room, password="secret")
+                )
+                joined = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                assert joined.get("type") == MsgType.JOINED.value
+                assert joined["room_id"] == private_room
+    finally:
+        await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_only_room_creator_can_delete() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18781, udp_port=18782, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18781") as ws_host:
+            await ws_host.send(encode_msg(MsgType.HELLO, name="Boss"))
+            decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+
+            await ws_host.send(encode_msg(MsgType.CREATE_ROOM, name="Ops"))
+            ops_room = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+                if msg.get("type") == MsgType.ROOM_CREATED.value:
+                    ops_room = msg["room"]["room_id"]
+                    break
+            assert ops_room
+
+            async with websockets.connect("ws://127.0.0.1:18781") as ws_guest:
+                await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
+                decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+
+                await ws_guest.send(encode_msg(MsgType.DELETE_ROOM, room_id=ops_room))
+                err = None
+                for _ in range(12):
+                    msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                    if msg.get("type") == MsgType.ERROR.value:
+                        err = msg
+                        break
+                assert err is not None
+                assert err.get("error_code") == "not_room_owner"
+    finally:
+        await hub.stop()

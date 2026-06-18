@@ -31,6 +31,7 @@ class UserSettings:
     ptt_key: str = "space"
     last_server_host: str = ""
     last_server_port: int = 9513
+    last_server_underlay: str = ""
     hosted_server_name: str = ""
     babblecast_ip: str = ""
     babblecast_custom_address: bool = False
@@ -60,6 +61,7 @@ class UserSettings:
                 ptt_key=str(raw.get("ptt_key", "space")),
                 last_server_host=str(raw.get("last_server_host", "")),
                 last_server_port=int(raw.get("last_server_port", 9513)),
+                last_server_underlay=str(raw.get("last_server_underlay", "")),
                 hosted_server_name=str(raw.get("hosted_server_name", "")),
                 babblecast_ip=str(raw.get("babblecast_ip", "")),
                 babblecast_custom_address=bool(raw.get("babblecast_custom_address", False)),

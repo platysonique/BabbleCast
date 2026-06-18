@@ -92,7 +92,7 @@ class AndroidMicCapture:
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioRecord = autoclass("android.media.AudioRecord")
-        MediaRecorder = autoclass("android.media.MediaRecorder")
+        AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
         min_buf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -101,7 +101,7 @@ class AndroidMicCapture:
         if min_buf <= 0:
             raise RuntimeError(f"AudioRecord.getMinBufferSize failed: {min_buf}")
         self._record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            AudioSource.VOICE_COMMUNICATION,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -115,7 +115,8 @@ class AndroidMicCapture:
         self._thread.start()
         logger.info("Android mic capture started")
 
-    def stop(self) -> None:
+    def stop(self, *, teardown: bool = False) -> None:
+        _ = teardown
         self._running = False
         self._on_level = None
         if self._record:

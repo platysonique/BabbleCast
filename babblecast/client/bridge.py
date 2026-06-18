@@ -417,20 +417,20 @@ class BridgeManager:
         for session in self._sessions.values():
             session.update_settings(settings)
 
-    def create_room(self, link_id: str, name: str) -> None:
+    def create_room(self, link_id: str, name: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)
         if session:
-            session.create_room(name)
+            session.create_room(name, password=password)
 
     def delete_room(self, link_id: str, room_id: str) -> None:
         session = self._sessions.get(link_id)
         if session:
             session.delete_room(room_id)
 
-    def join_room(self, link_id: str, room_id: str) -> None:
+    def join_room(self, link_id: str, room_id: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)
         if session:
-            session.join_room(room_id)
+            session.join_room(room_id, password=password)
 
     def request_rooms(self, link_id: str) -> None:
         session = self._sessions.get(link_id)

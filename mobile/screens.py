@@ -13,9 +13,8 @@ from kivymd.uix.card import MDCard
 from kivymd.uix.screen import MDScreen
 
 from babblecast.client.bridge import BridgeManager
-from babblecast.address import babblecast_prefix
 from babblecast.config import get_settings
-from babblecast.constants import babblecast_subnet_example_host, DEFAULT_WS_PORT
+from babblecast.constants import DEFAULT_WS_PORT
 from mobile.theme import ACCENT, BG, MUTED, SUCCESS, SURFACE, TEXT
 
 class ConnectScreen(MDScreen):
@@ -60,7 +59,7 @@ class ConnectScreen(MDScreen):
         server_scroll.add_widget(self._server_box)
 
         manual_label = MDLabel(
-            text=f"Or enter PC LAN IP, {babblecast_prefix()}.x.x, or name.babblecast.local + port {DEFAULT_WS_PORT}",
+            text=f"Or enter LAN IP (e.g. 192.168.1.141) or name.babblecast.local + port {DEFAULT_WS_PORT}",
             font_style="H6",
             theme_text_color="Custom",
             text_color=TEXT,
@@ -68,8 +67,8 @@ class ConnectScreen(MDScreen):
         manual_row = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
         settings = get_settings()
         self._host_field = MDTextField(
-            hint_text=f"BabbleCast IP ({babblecast_subnet_example_host(20)})",
-            text=settings.last_server_host or settings.babblecast_ip or "",
+            hint_text="LAN IP (192.168.x.x)",
+            text=settings.last_server_host or "",
             size_hint_x=0.65,
         )
         self._port_field = MDTextField(
@@ -120,7 +119,10 @@ class ConnectScreen(MDScreen):
         self._discovery_status.text = text
 
     def update_servers(self, servers) -> None:
-        from kivymd.uix.button import MDFlatButton
+        signature = tuple((s.service_name, s.host, s.ws_port) for s in servers)
+        if signature == getattr(self, "_server_signature", None):
+            return
+        self._server_signature = signature
 
         self._server_box.clear_widgets()
         if not servers:
@@ -128,7 +130,7 @@ class ConnectScreen(MDScreen):
 
             self._server_box.add_widget(
                 MDLabel(
-                    text=f"Nothing found — enter a BabbleCast address ({babblecast_prefix()}.x.x) or name.babblecast.local below",
+                    text="Nothing found — enter a LAN IP (192.168.x.x) or name.babblecast.local below",
                     theme_text_color="Custom",
                     text_color=MUTED,
                     size_hint_y=None,
@@ -359,10 +361,8 @@ class LiveScreen(MDScreen):
     def _create_room(self) -> None:
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
-        name = self._new_room_field.text.strip()
-        if name:
-            app.controller.create_room(name)
-            self._new_room_field.text = ""
+        app.controller.create_room(self._new_room_field.text)
+        self._new_room_field.text = ""
 
     def update_rooms(self, rooms: list, is_active: bool, current_room_id: str = "") -> None:
         from kivy.clock import Clock
@@ -391,7 +391,8 @@ class LiveScreen(MDScreen):
             name = str(r.get("name", "Room"))
             count = int(r.get("member_count", 0))
             is_current = rid == current_room_id
-            label_text = f"▸ {name} ({count})" if is_current else f"{name} ({count})"
+            lock = "🔒 " if r.get("password_protected") else ""
+            label_text = f"▸ {lock}{name} ({count})" if is_current else f"{lock}{name} ({count})"
             row = MDCard(
                 padding=dp(6),
                 size_hint_x=None,
@@ -417,14 +418,20 @@ class LiveScreen(MDScreen):
                 if room_id != current_room_id:
                     app.controller.join_room(room_id)
 
-            def bind_long_press(card, room_id=rid, room_name=name) -> None:
+            def bind_long_press(card, room_id=rid, room_name=name, room_meta=r) -> None:
                 card._long_pressed = False  # type: ignore[attr-defined]
                 state: dict[str, object | None] = {"ev": None}
 
                 def fire_long(_dt) -> None:
                     state["ev"] = None
                     card._long_pressed = True  # type: ignore[attr-defined]
-                    app.controller.delete_room(room_id, room_name)
+                    creator_id = str(room_meta.get("creator_id", ""))
+                    session = app.controller._bridge.get_session(app.controller._active_link_id or "")
+                    if creator_id and session and creator_id != session.client_id:
+                        app.controller.set_status("Only the room creator can delete this room")
+                        return
+                    if can_delete:
+                        app.controller.delete_room(room_id, room_name)
 
                 def touch_down(_card, touch) -> bool:
                     if card.collide_point(*touch.pos):
@@ -442,7 +449,7 @@ class LiveScreen(MDScreen):
 
             row.bind(on_release=on_tap)
             if can_delete:
-                bind_long_press(row, rid, name)
+                bind_long_press(row, rid, name, r)
             self._rooms_box.add_widget(row)
 
     def connected_link_ids(self) -> list[str]:

@@ -1,4 +1,4 @@
-"""BabbleCast virtual addressing — fixed ``11.2.x.x``, scalable third/fourth octets."""
+"""Legacy BabbleCast virtual addressing (11.2.x.x) — kept for migration tests only."""
 
 from __future__ import annotations
 
@@ -6,9 +6,12 @@ import logging
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from babblecast.constants import BABBLECAST_AUTO_DOMAIN, BABBLECAST_FIXED_OCTETS, DEFAULT_WS_PORT
+from babblecast.constants import DEFAULT_WS_PORT
 
 logger = logging.getLogger(__name__)
+
+BABBLECAST_FIXED_OCTETS = (11, 2)
+BABBLECAST_AUTO_DOMAIN = 9
 
 
 def babblecast_prefix() -> str:
@@ -66,10 +69,15 @@ def validate_address_suffix(suffix: str) -> str | None:
 
 def _port_open(ip: str, port: int, timeout: float) -> bool:
     try:
-        with socket.create_connection((ip, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        from babblecast.transport_probe import tcp_port_open
+
+        return tcp_port_open(ip, port, timeout)
+    except ImportError:
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
 
 def _first_free_host_in_domain(third: int, *, port: int = DEFAULT_WS_PORT, timeout: float = 0.08) -> int | None:
@@ -111,6 +119,29 @@ def domain_scan_targets(third: int) -> list[str]:
     return [format_babblecast_ip(third, h) for h in range(1, 255)]
 
 
+def scan_hosts_for_servers(
+    hosts: list[str],
+    *,
+    ws_port: int = DEFAULT_WS_PORT,
+    connect_timeout: float = 0.08,
+    max_workers: int = 64,
+) -> list[str]:
+    if not hosts:
+        return []
+    workers = min(max_workers, max(1, len(hosts)))
+    found: list[str] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_port_open, ip, ws_port, connect_timeout): ip for ip in hosts
+        }
+        for future in as_completed(futures):
+            ip = futures[future]
+            if future.result():
+                found.append(ip)
+    found.sort(key=lambda s: tuple(int(p) for p in s.split(".")))
+    return found
+
+
 def scan_domains_for_servers(
     domains: list[int],
     *,
@@ -122,17 +153,12 @@ def scan_domains_for_servers(
     for d in domains:
         if 1 <= d <= 254:
             targets.extend(domain_scan_targets(d))
-    found: list[str] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_port_open, ip, ws_port, connect_timeout): ip for ip in targets
-        }
-        for future in as_completed(futures):
-            ip = futures[future]
-            if future.result():
-                found.append(ip)
-    found.sort(key=lambda s: tuple(int(p) for p in s.split(".")))
-    return found
+    return scan_hosts_for_servers(
+        targets,
+        ws_port=ws_port,
+        connect_timeout=connect_timeout,
+        max_workers=max_workers,
+    )
 
 
 def discovery_scan_domains(settings_domain: int | None = None) -> list[int]:

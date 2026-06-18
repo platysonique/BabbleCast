@@ -7,8 +7,6 @@ import platform
 import socket
 import struct
 
-from babblecast.address import is_babblecast_ip
-
 try:
     import fcntl
 except ImportError:
@@ -109,13 +107,11 @@ def pick_reachable_server_ip(
     candidates = [ip for ip in server_ips if ip and not ip.startswith("127.")]
     if not candidates:
         return server_ips[0] if server_ips else ""
-    # Prefer real LAN addresses over virtual BabbleCast IDs (11.2.x.x).
-    reachable = [ip for ip in candidates if not is_babblecast_ip(ip)] or candidates
-    for server_ip in reachable:
+    for server_ip in candidates:
         for client_ip in client_ips:
             if same_subnet_24(server_ip, client_ip):
                 return server_ip
-    return reachable[0]
+    return candidates[0]
 
 
 def is_private_lan_ipv4(ip: str) -> bool:
@@ -136,42 +132,43 @@ def is_private_lan_ipv4(ip: str) -> bool:
     return False
 
 
+def is_overlay_ipv4(ip: str) -> bool:
+    """True for Tailscale/CGNAT 100.64.0.0/10 overlay addresses (not physical LAN)."""
+    parts = ip.strip().split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        a, b, _c, _d = (int(p) for p in parts)
+    except ValueError:
+        return False
+    return a == 100 and 64 <= b <= 127
+
+
+def advertise_hosts_for_settings() -> list[str]:
+    """Real LAN IPv4 addresses for mDNS A records."""
+    return [ip for ip in local_ipv4_addresses() if is_private_lan_ipv4(ip)]
+
+
 def is_valid_connect_target(host: str) -> bool:
-    """Hosts clients may dial: loopback, BabbleCast virtual IP, mDNS name, or LAN IP."""
+    """Hosts clients may dial: loopback, mDNS name, or private LAN IP."""
     normalized = host.strip().lower()
     if normalized in ("127.0.0.1", "localhost"):
         return True
     if normalized.endswith(".babblecast.local"):
         return True
-    if is_babblecast_ip(host):
-        return True
     return is_private_lan_ipv4(host)
 
 
-def advertise_hosts_for_settings() -> list[str]:
-    """Real LAN IPv4 addresses for mDNS A records (physically reachable on the network)."""
-    return local_ipv4_addresses()
-
-
 def primary_lan_ipv4() -> str:
-    """BabbleCast virtual IP others should use to reach this host."""
-    from babblecast.config import get_settings
-
-    ip = get_settings().babblecast_ip.strip()
-    if ip and is_babblecast_ip(ip):
-        return ip
-    return "127.0.0.1"
+    """Primary LAN IPv4 others on the network should use to reach this host."""
+    hosts = advertise_hosts_for_settings()
+    return hosts[0] if hosts else "127.0.0.1"
 
 
 def is_local_host(host: str) -> bool:
     """True when host refers to this machine (loopback or a local interface IP)."""
-    from babblecast.config import get_settings
-
     normalized = host.strip().lower()
     if normalized in ("127.0.0.1", "localhost", "::1"):
-        return True
-    settings_ip = get_settings().babblecast_ip.strip()
-    if settings_ip and normalized == settings_ip.lower():
         return True
     try:
         socket.inet_aton(normalized)
@@ -180,5 +177,20 @@ def is_local_host(host: str) -> bool:
     return normalized in local_ipv4_addresses()
 
 
-# Back-compat aliases
-is_babblecast_subnet_ip = is_babblecast_ip
+def saved_lan_hosts() -> list[str]:
+    """Previously used LAN IPs from settings (for beacon/scan hints)."""
+    from babblecast.config import get_settings
+
+    settings = get_settings()
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def add(ip: str) -> None:
+        ip = ip.strip()
+        if ip and is_private_lan_ipv4(ip) and ip not in seen:
+            seen.add(ip)
+            ordered.append(ip)
+
+    add(settings.last_server_host)
+    add(settings.last_server_underlay)
+    return ordered

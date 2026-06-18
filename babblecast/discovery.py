@@ -13,9 +13,8 @@ from typing import Callable
 from zeroconf import IPVersion, InterfaceChoice, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, LOCAL_DOMAIN, SERVICE_TYPE
-from babblecast.address import is_babblecast_ip
-from babblecast.network import local_ipv4_addresses, pick_reachable_server_ip
-from babblecast.network_scan import scan_local_subnets_for_servers
+from babblecast.network import is_private_lan_ipv4, local_ipv4_addresses, pick_reachable_server_ip
+from babblecast.network_scan import LanServerHit, discover_lan_servers
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ class DiscoveredServer:
     @property
     def label(self) -> str:
         host_label = self.hostname or f"{self.host}:{self.ws_port}"
-        via = " · scan" if self.discovered_via == "scan" else ""
+        via = " · beacon" if self.discovered_via == "scan" else ""
         return f"{self.name} ({host_label}){via}"
 
     @property
@@ -60,11 +59,13 @@ class DiscoveredServer:
 
     @property
     def connect_host(self) -> str:
-        """Hostname or subnet-aware IP for WebSocket connect."""
+        """LAN IP preferred — .babblecast.local often fails on Android mesh DNS."""
+        if self.addresses:
+            ip = pick_reachable_server_ip(list(self.addresses))
+            if ip:
+                return ip
         if self.hostname:
             return self.hostname
-        if self.addresses:
-            return pick_reachable_server_ip(list(self.addresses))
         return self.host
 
 
@@ -83,14 +84,12 @@ class ServerAdvertiser:
         hosts: list[str] | None = None,
         *,
         password_protected: bool = False,
-        babblecast_ip: str = "",
     ) -> None:
         self._server_name = server_name
         self._ws_port = ws_port
         self._udp_port = udp_port
         self._hosts = hosts if hosts is not None else local_ipv4_addresses()
         self._password_protected = password_protected
-        self._babblecast_ip = babblecast_ip.strip()
         self._slug = slugify_server_name(server_name)
         self._zc: Zeroconf | None = None
         self._info: ServiceInfo | None = None
@@ -137,7 +136,6 @@ class ServerAdvertiser:
                     "ver": "1",
                     "host": self._slug,
                     "auth": "1" if self._password_protected else "0",
-                    "bbc": self._babblecast_ip,
                 },
                 server=hostname,
             )
@@ -176,7 +174,7 @@ class ServerAdvertiser:
 
 
 class ServerDiscovery:
-    """Browse for BabbleCast servers on LAN / Tailscale.
+    """Browse for BabbleCast servers on LAN / mesh.
 
     Runs zeroconf in a dedicated thread for the same asyncio-safety reasons
     as ServerAdvertiser.
@@ -193,7 +191,6 @@ class ServerDiscovery:
         self._scan_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._running = False
-        self._scan_done = False
 
     @property
     def servers(self) -> list[DiscoveredServer]:
@@ -207,8 +204,8 @@ class ServerDiscovery:
     def _resolve(self, service_name: str, info: ServiceInfo) -> None:
         raw_addresses = [socket.inet_ntoa(addr) for addr in (info.addresses or [])]
         non_loopback = [ip for ip in raw_addresses if not ip.startswith("127.")]
-        real_ips = [ip for ip in non_loopback if not is_babblecast_ip(ip)]
-        address_pool = real_ips or non_loopback or raw_addresses
+        private_ips = [ip for ip in non_loopback if is_private_lan_ipv4(ip)]
+        address_pool = private_ips or non_loopback or raw_addresses
         host = pick_reachable_server_ip(address_pool) if address_pool else ""
         if not host:
             return
@@ -266,41 +263,64 @@ class ServerDiscovery:
             if changed:
                 self._emit()
 
+    def _scan_interval_sec(self) -> float:
+        try:
+            from kivy.utils import platform
+
+            if platform == "android":
+                return 20.0
+        except ImportError:
+            pass
+        return 12.0
+
+    def _known_hosts(self) -> set[str]:
+        with self._lock:
+            return {s.host for s in self._servers.values()}
+
+    def _merge_scan_hits(self, hits: list[LanServerHit]) -> bool:
+        if not hits:
+            return False
+        known = self._known_hosts()
+        now = time.time()
+        changed = False
+        with self._lock:
+            for hit in hits:
+                if hit.host in known:
+                    continue
+                key = f"scan:{hit.host}"
+                if key in self._servers:
+                    continue
+                self._servers[key] = DiscoveredServer(
+                    service_name=key,
+                    name=hit.name,
+                    host=hit.host,
+                    ws_port=hit.ws_port,
+                    udp_port=DEFAULT_UDP_PORT,
+                    properties={"name": hit.name, "host": "", "auth": "0"},
+                    seen_at=now,
+                    addresses=(hit.host,),
+                    discovered_via="scan",
+                )
+                known.add(hit.host)
+                changed = True
+        return changed
+
     def _scan_loop(self) -> None:
-        """When mDNS browse is empty, periodically probe local /24 LAN subnets."""
+        """UDP beacon + mesh TCP probe for servers mDNS cannot reach across subnets."""
         while not self._stop_event.is_set():
-            self._stop_event.wait(15)
-            if self._stop_event.is_set():
-                break
+            interval = self._scan_interval_sec()
             try:
-                hits = scan_local_subnets_for_servers()
+                hits = discover_lan_servers()
             except Exception:
-                logger.exception("Subnet scan failed")
+                logger.exception("LAN discovery scan failed")
                 hits = []
-            if not hits:
-                continue
-            now = time.time()
-            changed = False
-            with self._lock:
-                for ip in hits:
-                    key = f"scan:{ip}"
-                    if key in self._servers:
-                        continue
-                    self._servers[key] = DiscoveredServer(
-                        service_name=key,
-                        name=f"BabbleCast @ {ip}",
-                        host=ip,
-                        ws_port=DEFAULT_WS_PORT,
-                        udp_port=DEFAULT_UDP_PORT,
-                        properties={"name": f"BabbleCast @ {ip}", "host": "", "auth": "0"},
-                        seen_at=now,
-                        addresses=(ip,),
-                        discovered_via="scan",
-                    )
-                    changed = True
-            if changed:
-                logger.info("LAN scan added %s server(s)", len(hits))
+
+            if self._merge_scan_hits(hits):
+                logger.info("LAN discovery added %s server(s)", len(hits))
                 self._emit()
+
+            if self._stop_event.wait(interval):
+                break
 
     def _browse_loop(self) -> None:
         zc: Zeroconf | None = None
@@ -342,7 +362,7 @@ class ServerDiscovery:
         self._scan_thread = threading.Thread(
             target=self._scan_loop,
             daemon=True,
-            name="bbc-subnet-scan",
+            name="bbc-lan-scan",
         )
         self._scan_thread.start()
 
@@ -361,4 +381,3 @@ class ServerDiscovery:
         if self._scan_thread:
             self._scan_thread.join(timeout=60)
             self._scan_thread = None
-        self._scan_done = False

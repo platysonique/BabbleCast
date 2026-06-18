@@ -114,6 +114,86 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 
 ---
 
+### LAN discovery: cross-subnet Wi‑Fi vs wired (phone still not finding server)
+**Date**: 2026-06-17  (updated after blind-fix push `6360b0f`)
+**Trigger**: User report — phone still not discovering hosted PC; demand for Perplexity research before more fixes
+**Source**: `perplexity_research` (Android mDNS across routed /24 subnets, TCP scan fallback, LinkProperties routes, Tailscale advertise, MulticastLock; second pass on desktop-vs-phone overlay routing and VPN split-tunnel)
+**Findings**:
+- mDNS uses link-local multicast `224.0.0.251` — **not routed across /24 boundaries** even when ICMP/TCP unicast works
+- **Desktop B on same LAN as host** discovers via mDNS (same broadcast domain) and/or scan once host binds `11.2.x.x`
+- **Phone NordVPN** routes `11.2.9.1` via `tun0` (table 1050), stealing BabbleCast scan traffic off Wi‑Fi — Perplexity §3.1
+- **Host must bind overlay** (`ip route local 11.2.0.0/16 dev lo` + `ip addr` on LAN iface) or `11.2.9.x:9513` never answers even though `0.0.0.0:9513` listens
+- Phone CAN reach `192.168.1.141:9513` — proves mesh routes real LAN IP but not virtual `11.2.x` without overlay + route
+**Codebase Findings** (2026-06-17):
+- Runtime: host `babblecast_ip=11.2.9.1`, PC `192.168.1.141`, phone `192.168.86.72`
+- `adb shell ip route get 11.2.9.1` → `dev tun0` (VPN), not wlan0
+- No `overlay_net` existed — hosting did not configure OS for virtual IP
+**Resolution** (2026-06-17):
+- `babblecast/overlay_net.py` — bind `11.2.0.0/16` local + host IP on `lo` and primary LAN iface when hub advertises
+- `mobile/android_connect.py` + `babblecast/transport_probe.py` — TCP scan uses Wi‑Fi `Network.bindSocket()` so VPN does not hijack `11.2.x` probes
+- Still `11.2.x.x` scan + mDNS unchanged
+- Mesh cross-subnet may need router static route `11.2.0.0/16 → host LAN IP` (Perplexity §2.2)
+**Status**: RESOLVED (pending host restart + phone smoke test)
+
+---
+
+### Cross-subnet 11.2.x.x reachability (phone still not connecting) — Perplexity deep research
+**Date**: 2026-06-17 (evening)
+**Trigger**: User: improved lag but phone still not connecting; demand Perplexity with full code/goals context
+**Source**: `perplexity_research` (high reasoning) — custom overlay 11.2.0.0/16 across Google Wifi mesh /24 subnets, Android bindSocket vs routing, Tailscale/ZeroTier patterns
+**Findings**:
+- Binding `11.2.9.1/32` on Linux host is **necessary but not sufficient** — only affects packets that **arrive at the PC**; intermediate routers must know where 11.2.x.x lives
+- Phone `192.168.86.72` → `11.2.9.1`: kernel sends to Wi‑Fi gateway `192.168.86.1`; mesh has **no route** for 11.2.0.0/16 → packets never reach PC (verified: ping 11.2.9.1 100% loss, ping 192.168.1.141 OK, TCP 9513 to 192.168.1.141 OK from phone)
+- `Network.bindSocket()` fixes VPN hijack but **cannot create routes** to unreachable prefixes
+- Consumer Google/Nest Wifi **cannot add static routes** for 11.2.0.0/16 in normal UI
+- Proxy ARP / host-only DNAT **do not work cross-subnet** (ARP does not cross routers)
+- Correct pattern (Tailscale/ZeroTier/Hamachi): **endpoint-managed overlay** — capture 11.2.0.0/16 locally (Android `VpnService` long-term) and map to underlay LAN IP for transport
+- Pragmatic near-term: **overlay→underlay mapping** at app layer + **UDP discovery beacon** (overlay IP in UI, dial `192.168.1.141` on wire); mDNS `lan` TXT property for same-subnet; optional router static route for power users
+**Codebase Findings** (2026-06-17):
+- Prior code probed/scanned `11.2.9.1–254` over physical network — **cannot work** cross-/24 without router routes
+- Host overlay (`overlay_net.py`) correct for local accept once packets arrive
+**Resolution** (2026-06-17):
+- `babblecast/overlay_route.py` — map overlay↔underlay, `resolve_transport_host()`, persist `last_server_underlay`
+- `babblecast/discovery_beacon.py` — UDP 9515 beacon; server **unicasts** reply to `BABBLE_DISCOVER` (cross-mesh)
+- `transport_probe.py` / `session.connect` / `DiscoveredServer.connect_host` — dial underlay, keep 11.2.x.x identity
+- `network_scan.bootstrap_overlay_from_underlay()` — beacon + known underlay probe before overlay sweep
+- mDNS advertiser adds `lan` property; WELCOME includes `babblecast_ip`
+- **Long-term**: Android `VpnService` split-tunnel for 11.2.0.0/16 (Perplexity §6–7)
+**Status**: SUPERSEDED — see LAN-first pivot below
+
+---
+
+### LAN-first discovery pivot (drop 11.2.x.x overlay)
+**Date**: 2026-06-17
+**Trigger**: User approval after Perplexity research + live network proof
+**Source**: Perplexity research, `adb shell ping`, TCP probe phone→PC
+**Findings**:
+- Phone → `192.168.1.141` ping/TCP 9513 **works** across mesh subnets
+- Phone → `11.2.9.1` **100% packet loss** — mesh has no route for virtual overlay
+- mDNS does not cross `/24` boundaries on Google Wifi (by design)
+- Overlay actively **breaks** cross-subnet discovery; real LAN IPs are the correct transport
+**Resolution**:
+- Removed `overlay_net.py`, `overlay_route.py`
+- mDNS + beacon advertise **real LAN IPs**; connect dials LAN IP directly
+- `discover_lan_servers()` — UDP beacon (9515) + mesh-aware TCP probe, dedupe by IP
+- Host dialog: name + password only (no custom BabbleCast address)
+- Legacy `address.py` kept for migration tests only
+**Status**: IMPLEMENTED — pending smoke test (restart `bbc` host, NordVPN off on phone)
+
+---
+
+### Room-level password protection
+**Date**: 2026-06-17
+**Trigger**: User request — per-room boss control without admin roles
+**Resolution**:
+- `CREATE_ROOM` accepts optional `password`; creator stored as `creator_id`
+- `JOIN_ROOM` requires password when room is protected; wrong/missing password rejected
+- `DELETE_ROOM` only allowed by room creator (General/system room unchanged)
+- `RoomInfo` broadcasts `password_protected` + `creator_id`; UI shows 🔒 and prompts password only when needed
+**Status**: IMPLEMENTED
+
+---
+
 ### Test coverage gaps
 **Date**: 2026-06-17
 **Trigger**: Codebase audit

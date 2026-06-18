@@ -20,6 +20,7 @@ from babblecast.client.room_controller import (
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import DEFAULT_WS_PORT, MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
+from babblecast.network import primary_lan_ipv4
 from babblecast.network import is_local_host, is_valid_connect_target
 from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.server.embedded import EmbeddedServer
@@ -94,6 +95,7 @@ class BabbleController:
         self.ptt_active = False
         self._participant_by_composite: dict[str, dict] = {}
         self._discovery_watch = None
+        self._last_server_signature: tuple[tuple[str, str, int], ...] | None = None
 
     def _alive(self) -> bool:
         return not self._closing and not self._bridge.shutting_down
@@ -117,10 +119,12 @@ class BabbleController:
         self._apply_servers(self._discovery.servers)
         screen = self.app.screen("connect")
         if location_granted():
-            screen.set_discovery_status("Searching LAN for BabbleCast servers…")
+            screen.set_discovery_status(
+                f"Scanning your network for BabbleCast servers ({primary_lan_ipv4()})…"
+            )
         else:
             screen.set_discovery_status(
-                "Grant Location permission for auto-discover, or enter PC IP below"
+                "Grant Location for auto-discover, or enter a LAN IP below"
             )
         if self._discovery_watch is None:
             self._discovery_watch = Clock.schedule_interval(self._watch_discovery_permissions, 2.0)
@@ -161,13 +165,17 @@ class BabbleController:
     def _apply_servers(self, servers) -> None:
         if not self._alive():
             return
+        signature = tuple((s.service_name, s.host, s.ws_port) for s in servers)
+        if signature == self._last_server_signature:
+            return
+        self._last_server_signature = signature
         screen = self.app.screen("connect")
         screen.update_servers(servers)
         if servers:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status(
-                f"No servers yet — scanning your LAN subnet, or enter address below"
+                "No servers yet — scanning your network, or enter a LAN IP below"
             )
 
     def _password_required_for(self, host: str, port: int) -> bool:
@@ -194,7 +202,7 @@ class BabbleController:
             self.set_status("Enter a server IP or hostname")
             return
         if host and not is_valid_connect_target(host):
-            self.set_status("Use a BabbleCast address, LAN IP, name.babblecast.local, or 127.0.0.1")
+            self.set_status("Use a LAN IP, name.babblecast.local, or 127.0.0.1")
             return
         try:
             port = int(port)
@@ -285,14 +293,11 @@ class BabbleController:
             return
         from mobile.credentials_dialog import prompt_host
 
-        prompt_host(lambda server, name, pwd, bbc_ip: self._start_host_with_name(server, name, pwd, bbc_ip))
+        prompt_host(lambda server, name, pwd: self._start_host_with_name(server, name, pwd))
 
     def _start_host_with_name(
-        self, server_name: str, display_name: str, password: str = "", babblecast_ip: str = ""
+        self, server_name: str, display_name: str, password: str = ""
     ) -> None:
-        if babblecast_ip:
-            self._settings.babblecast_ip = babblecast_ip
-            save_settings(self._settings)
         self._settings.display_name = display_name
         self._own_server_password = password
         self._start_host(server_name)
@@ -441,8 +446,8 @@ class BabbleController:
         slug_host = service_hostname(slugify_server_name(self._settings.hosted_server_name or "BabbleCast"))
         self.set_status(f"Hosting on {lan}:{port} — others: {slug_host} or Discover")
         screen = self.app.screen("connect")
-        if getattr(screen, "_host_field", None) and self._settings.babblecast_ip:
-            screen._host_field.text = self._settings.babblecast_ip
+        if getattr(screen, "_host_field", None) and self._settings.last_server_host:
+            screen._host_field.text = self._settings.last_server_host
         if self._pending_embedded_connect and self._embedded and self._embedded.running:
             self._pending_embedded_connect = False
             screen = self.app.screen("connect")
@@ -723,11 +728,29 @@ class BabbleController:
         session = self._bridge.get_session(self._active_link_id)
         if session and session.room_id == room_id:
             return
+        room_meta = session.room_by_id(room_id) if session else None
+        if room_meta and room_meta.get("password_protected"):
+            from mobile.credentials_dialog import prompt_room_password
+
+            room_name = str(room_meta.get("name", "Room"))
+
+            def proceed(password: str) -> None:
+                self._bridge.join_room(self._active_link_id, room_id, password=password)
+                self.set_status("Switching room…")
+
+            prompt_room_password(room_name, proceed)
+            return
         self._bridge.join_room(self._active_link_id, room_id)
         self.set_status("Switching room…")
 
     def delete_room(self, room_id: str, room_name: str) -> None:
         if not self._active_link_id:
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        room_meta = session.room_by_id(room_id) if session else None
+        creator_id = str(room_meta.get("creator_id", "")) if room_meta else ""
+        if creator_id and session and creator_id != session.client_id:
+            self.set_status("Only the room creator can delete this room")
             return
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
         from kivymd.uix.dialog import MDDialog
@@ -755,10 +778,15 @@ class BabbleController:
         dialog.open()
 
     def create_room(self, name: str) -> None:
-        if not self._active_link_id or not name.strip():
+        if not self._active_link_id:
             return
-        self._bridge.create_room(self._active_link_id, name.strip())
-        self.set_status(f"Creating room “{name.strip()}”…")
+        from mobile.credentials_dialog import prompt_create_room
+
+        def proceed(room_name: str, password: str) -> None:
+            self._bridge.create_room(self._active_link_id, room_name, password=password)
+            self.set_status(f"Creating room “{room_name}”…")
+
+        prompt_create_room(name.strip(), proceed)
 
     def _on_chat(self, link_id: str, data: dict) -> None:
         self._record_chat(link_id, data)

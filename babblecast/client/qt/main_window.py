@@ -32,6 +32,8 @@ from babblecast.client.qt.credentials_dialog import (
     ConnectCredentialsDialog,
     DisconnectConfirmDialog,
     HostCredentialsDialog,
+    RoomCreateDialog,
+    RoomPasswordDialog,
 )
 from babblecast.client.qt.detail_drawer import DetailDrawer
 from babblecast.client.qt.participant_widget import ParticipantWidget
@@ -363,7 +365,7 @@ class MainWindow(QMainWindow):
         host = host.strip()
         if host and not is_valid_connect_target(host):
             self._status.setText(
-                "Use a BabbleCast address, LAN IP, name.babblecast.local, or 127.0.0.1"
+                "Use a LAN IP, name.babblecast.local, or 127.0.0.1"
             )
             return
         if self._already_connected(host, port):
@@ -414,7 +416,6 @@ class MainWindow(QMainWindow):
             return
         name = dlg.server_name
         self._settings.hosted_server_name = name
-        self._settings.babblecast_ip = dlg.babblecast_ip
         self._settings.display_name = dlg.display_name
         self._own_server_password = dlg.server_password
         save_settings(self._settings)
@@ -768,7 +769,8 @@ class MainWindow(QMainWindow):
         self._room_list.clear()
         for r in rooms:
             rid = str(r.get("room_id", ""))
-            label = f"{r.get('name', 'Room')} ({r.get('member_count', 0)})"
+            lock = "🔒 " if r.get("password_protected") else ""
+            label = f"{lock}{r.get('name', 'Room')} ({r.get('member_count', 0)})"
             if rid == current_rid:
                 label = f"▸ {label}"
             item = QListWidgetItem(label)
@@ -780,10 +782,11 @@ class MainWindow(QMainWindow):
     def _create_room(self) -> None:
         if not self._active_link_id:
             return
-        name = self._new_room_edit.text().strip()
-        if name:
-            self._bridge.create_room(self._active_link_id, name)
-            self._new_room_edit.clear()
+        dlg = RoomCreateDialog(self._new_room_edit.text().strip(), self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._bridge.create_room(self._active_link_id, dlg.room_name, password=dlg.room_password)
+        self._new_room_edit.clear()
 
     def _join_room_item(self, item: QListWidgetItem) -> None:
         if not self._active_link_id:
@@ -794,7 +797,15 @@ class MainWindow(QMainWindow):
         session = self._bridge.get_session(self._active_link_id)
         if session and session.room_id == room_id:
             return
-        self._bridge.join_room(self._active_link_id, room_id)
+        password = ""
+        if session:
+            room_meta = session.room_by_id(room_id)
+            if room_meta and room_meta.get("password_protected"):
+                dlg = RoomPasswordDialog(str(room_meta.get("name", "Room")), self)
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                password = dlg.password
+        self._bridge.join_room(self._active_link_id, room_id, password=password)
         self._status.setText("Switching room…")
 
     def _room_context_menu(self, pos) -> None:
@@ -810,8 +821,14 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         menu.addAction("Join room", lambda: self._join_room_item(item))
-        if self._room_list.count() > 1:
-            menu.addAction("Delete room", lambda: self._delete_room(room_id, item.text().lstrip("▸ ")))
+        session = self._bridge.get_session(self._active_link_id)
+        room_meta = session.room_by_id(room_id) if session else None
+        creator_id = str(room_meta.get("creator_id", "")) if room_meta else ""
+        can_delete = self._room_list.count() > 1 and (
+            not creator_id or (session and creator_id == session.client_id)
+        )
+        if can_delete:
+            menu.addAction("Delete room", lambda: self._delete_room(room_id, item.text().lstrip("▸ ").lstrip("🔒 ")))
         menu.exec(self._room_list.mapToGlobal(pos))
 
     def _delete_room(self, room_id: str, label: str) -> None:

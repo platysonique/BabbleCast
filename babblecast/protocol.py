@@ -22,6 +22,9 @@ class ErrorCode(str, Enum):
     NAME_TAKEN = "name_taken"
     PASSWORD_REQUIRED = "password_required"
     PASSWORD_WRONG = "password_wrong"
+    ROOM_PASSWORD_REQUIRED = "room_password_required"
+    ROOM_PASSWORD_WRONG = "room_password_wrong"
+    NOT_ROOM_OWNER = "not_room_owner"
     ROOM_NOT_FOUND = "room_not_found"
     LAST_ROOM = "last_room"
     USER_NOT_FOUND = "user_not_found"
@@ -85,6 +88,18 @@ def parse_error_code(data: dict[str, Any]) -> str | None:
     return str(code)
 
 
+def is_room_password_error(error_code: str | None, message: str = "") -> bool:
+    if error_code in (
+        ErrorCode.ROOM_PASSWORD_REQUIRED.value,
+        ErrorCode.ROOM_PASSWORD_WRONG.value,
+    ):
+        return True
+    lowered = message.lower()
+    return "room password" in lowered or (
+        "password" in lowered and "room" in lowered and ("wrong" in lowered or "required" in lowered)
+    )
+
+
 def is_name_taken_error(error_code: str | None, message: str = "") -> bool:
     if error_code == ErrorCode.NAME_TAKEN.value:
         return True
@@ -139,12 +154,16 @@ class RoomInfo:
     room_id: str
     name: str
     member_count: int = 0
+    password_protected: bool = False
+    creator_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "room_id": self.room_id,
             "name": self.name,
             "member_count": self.member_count,
+            "password_protected": self.password_protected,
+            "creator_id": self.creator_id,
         }
 
 

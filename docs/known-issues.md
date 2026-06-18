@@ -354,22 +354,41 @@ Remaining: UI feedback when preferred hw device fails; prefer `default`/`pipewir
 
 ---
 
-## LAN discovery: virtual `11.2.x.x` addresses not reachable on physical network
+## LAN discovery: real IPs + beacon + mesh probe
 
-**Status:** Fixed (2026-06-17)  
-**Affects:** mDNS advertisement + subnet scan fallback (`babblecast/discovery.py`, `babblecast/network_scan.py`)
+**Status:** By design (2026-06-17)  
+**Affects:** `babblecast/network.py`, `babblecast/network_scan.py`, `babblecast/discovery_beacon.py`, `babblecast/mesh_probe.py`
 
-### Symptom
+### How it works
 
-Phone or other client could not discover a hosted PC; scan found nothing.
+- Servers advertise **real private LAN IPs** (`192.168.x.x`, `10.x`, etc.) via mDNS A records and hostname `name.babblecast.local`.
+- **UDP beacon** on port `9515` carries `{name, lan, ws}`; the server **unicasts** a reply when it hears `BABBLE_DISCOVER` — this crosses Google/Nest Wifi mesh subnets.
+- **Mesh probe** uses `ip route get` to find routable sibling-subnet IPs and probes TCP `9513` — no blind `/24` sweeps.
+- Clients connect directly to the LAN IP (or mDNS hostname). **Self-connect on the same machine** still uses `127.0.0.1`.
 
-### Cause
+### Note on mDNS
 
-mDNS A records and fallback scan targeted virtual BabbleCast IPs (`11.2.9.x`), which are not routable on a normal home LAN. Server listens on `0.0.0.0` with real `192.168.x.x` (etc.) addresses.
+mDNS is link-local and does **not** cross Wi‑Fi/wired subnet boundaries on consumer mesh routers. The **beacon + mesh probe** path is the cross-subnet discovery fallback.
 
-### Fix
+### Deprecated: virtual `11.2.x.x` overlay
 
-- mDNS advertises **real LAN IPv4** in A records; virtual BabbleCast IP in `bbc` property.
-- Fallback scan probes local **/24 subnets** for port 9513 every 15 s.
-- Manual connect accepts LAN IPs in addition to `11.2.x.x` and `*.babblecast.local`.
+The `11.2.x.x` virtual address space and `overlay_net` / `overlay_route` modules were removed. Mesh routers route real `192.168.x.x` internally but treat `11.2.x.x` as unknown internet-bound traffic.
+
+---
+
+## ~~LAN discovery: BabbleCast address scan (`11.2.x.x`)~~
+
+**DEPRECATED** (2026-06-17): Replaced by LAN-first discovery (see above).
+
+---
+
+## ~~LAN discovery: virtual `11.2.x.x` addresses not reachable on physical network~~
+
+**DEPRECATED** (2026-06-17): Confirmed by live network tests — overlay does not work cross-subnet without router static routes Google Wifi cannot add.
+
+---
+
+## ~~LAN discovery: phone and PC on different subnets~~
+
+**DEPRECATED** (2026-06-17): Wrong approach — added `192.168.*` gateway probing instead of targeted beacon/mesh probe. Removed.
 

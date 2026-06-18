@@ -48,7 +48,7 @@ class EmbeddedServer:
 
     @property
     def lan_host(self) -> str:
-        """Configured BabbleCast virtual IP others should use (11.2.x.x)."""
+        """Primary LAN IPv4 others on the network should use."""
         return primary_lan_ipv4()
 
     @property

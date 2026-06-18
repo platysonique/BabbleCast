@@ -32,6 +32,11 @@ from babblecast.protocol import (
 
 logger = logging.getLogger(__name__)
 
+# Port-scan probes open a bare TCP socket; websockets logs each failed handshake
+# at ERROR with a full traceback. Keep real BabbleCast logs on babblecast.* only.
+_ws_probe_logger = logging.getLogger("babblecast.ws")
+_ws_probe_logger.setLevel(logging.CRITICAL)
+
 _VOICE_PRESENCE_INTERVAL_SEC = 0.1
 _VOICE_LEVEL_DELTA = 0.05
 
@@ -68,6 +73,9 @@ class Room:
     room_id: str
     name: str
     members: set[str] = field(default_factory=set)
+    creator_id: str = ""
+    password_salt: str = ""
+    password_digest: str = ""
 
 
 @dataclass
@@ -103,6 +111,7 @@ class BabbleCastHub:
         self._ws_server = None
         self._udp_transport = None
         self._advertiser: ServerAdvertiser | None = None
+        self._beacon = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._join_lock = asyncio.Lock()
 
@@ -163,11 +172,17 @@ class BabbleCastHub:
         msg = encode_msg(MsgType.PRESENCE, room_id=room_id, participants=participants)
         await self._broadcast_room(room_id, msg)
 
+    def _room_info(self, room: Room) -> dict[str, Any]:
+        return RoomInfo(
+            room.room_id,
+            room.name,
+            len(room.members),
+            password_protected=bool(room.password_digest),
+            creator_id=room.creator_id,
+        ).to_dict()
+
     async def _send_rooms(self, client: ClientState) -> None:
-        rooms = [
-            RoomInfo(r.room_id, r.name, len(r.members)).to_dict()
-            for r in self._rooms.values()
-        ]
+        rooms = [self._room_info(r) for r in self._rooms.values()]
         await client.ws.send(encode_msg(MsgType.ROOMS, rooms=rooms))
 
     async def _handle_message(self, client: ClientState, data: dict[str, Any]) -> None:
@@ -183,7 +198,18 @@ class BabbleCastHub:
 
         if mtype == MsgType.CREATE_ROOM:
             name = clamp_room_name(str(data.get("name", "Room")))
-            room = Room(room_id=new_id(), name=name)
+            password = str(data.get("password", "")).strip()
+            salt = ""
+            digest = ""
+            if password:
+                salt, digest = make_password_verifier(password)
+            room = Room(
+                room_id=new_id(),
+                name=name,
+                creator_id=client.client_id,
+                password_salt=salt,
+                password_digest=digest,
+            )
             self._rooms[room.room_id] = room
             if client.room_id:
                 old = self._rooms.get(client.room_id)
@@ -193,7 +219,7 @@ class BabbleCastHub:
             client.room_id = room.room_id
             room.members.add(client.client_id)
             await client.ws.send(
-                encode_msg(MsgType.ROOM_CREATED, room=RoomInfo(room.room_id, room.name, 1).to_dict())
+                encode_msg(MsgType.ROOM_CREATED, room=self._room_info(room))
             )
             await client.ws.send(
                 encode_msg(MsgType.JOINED, room_id=room.room_id, room_name=room.name)
@@ -214,6 +240,26 @@ class BabbleCastHub:
                     )
                 )
                 return
+            if room.password_digest:
+                supplied = str(data.get("password", ""))
+                if not supplied:
+                    await client.ws.send(
+                        encode_msg(
+                            MsgType.ERROR,
+                            message="Room password required",
+                            error_code=ErrorCode.ROOM_PASSWORD_REQUIRED.value,
+                        )
+                    )
+                    return
+                if not check_password(supplied, room.password_salt, room.password_digest):
+                    await client.ws.send(
+                        encode_msg(
+                            MsgType.ERROR,
+                            message="Incorrect room password",
+                            error_code=ErrorCode.ROOM_PASSWORD_WRONG.value,
+                        )
+                    )
+                    return
             if client.room_id:
                 old = self._rooms.get(client.room_id)
                 if old:
@@ -235,6 +281,15 @@ class BabbleCastHub:
                         MsgType.ERROR,
                         message="Room not found",
                         error_code=ErrorCode.ROOM_NOT_FOUND.value,
+                    )
+                )
+                return
+            if room.creator_id and room.creator_id != client.client_id:
+                await client.ws.send(
+                    encode_msg(
+                        MsgType.ERROR,
+                        message="Only the room creator can delete this room",
+                        error_code=ErrorCode.NOT_ROOM_OWNER.value,
                     )
                 )
                 return
@@ -473,10 +528,7 @@ class BabbleCastHub:
             return
 
     async def _broadcast_all_rooms(self) -> None:
-        rooms = [
-            RoomInfo(r.room_id, r.name, len(r.members)).to_dict()
-            for r in self._rooms.values()
-        ]
+        rooms = [self._room_info(r) for r in self._rooms.values()]
         msg = encode_msg(MsgType.ROOMS, rooms=rooms)
         tasks = [c.ws.send(msg) for c in self._clients.values()]
         if tasks:
@@ -529,9 +581,9 @@ class BabbleCastHub:
                 client.name = name
                 self._clients[client_id] = client
                 joined = True
-                default = self._default_room()
-                client.room_id = default.room_id
-                default.members.add(client_id)
+            default = self._default_room()
+            client.room_id = default.room_id
+            default.members.add(client_id)
             await ws.send(
                 encode_msg(
                     MsgType.WELCOME,
@@ -607,6 +659,7 @@ class BabbleCastHub:
             ping_interval=20,
             ping_timeout=20,
             max_size=2**20,
+            logger=_ws_probe_logger,
         )
         transport, _ = await self._loop.create_datagram_endpoint(
             lambda: self._VoiceProtocol(self),
@@ -614,12 +667,12 @@ class BabbleCastHub:
         )
         self._udp_transport = transport
         if self.advertise:
-            from babblecast.config import get_settings
+            from babblecast.discovery_beacon import DiscoveryBeacon
+            from babblecast.network import advertise_hosts_for_settings, primary_lan_ipv4
 
             adv_hosts = advertise_hosts_for_settings()
             if self.host not in ("0.0.0.0", "127.0.0.1") and self.host not in adv_hosts:
                 adv_hosts.insert(0, self.host)
-            bbc_ip = get_settings().babblecast_ip.strip()
             if adv_hosts:
                 self._advertiser = ServerAdvertiser(
                     self.server_name,
@@ -627,16 +680,24 @@ class BabbleCastHub:
                     self.udp_port,
                     adv_hosts,
                     password_protected=self.password_protected,
-                    babblecast_ip=bbc_ip,
                 )
                 self._advertiser.start()
             else:
                 logger.warning(
                     "No LAN IPv4 address found — mDNS advertisement skipped"
                 )
+            self._beacon = DiscoveryBeacon(
+                server_name=self.server_name,
+                ws_port=self.ws_port,
+                lan_ip=primary_lan_ipv4(),
+            )
+            self._beacon.start()
         logger.info("BabbleCast hub listening ws=%s udp=%s", self.ws_port, self.udp_port)
 
     async def stop(self) -> None:
+        if self._beacon:
+            self._beacon.stop()
+            self._beacon = None
         if self._advertiser:
             self._advertiser.stop()
             self._advertiser = None
