@@ -616,9 +616,9 @@ class BabbleCastHub:
         if self.advertise:
             adv_hosts = advertise_hosts_for_settings()
             if not adv_hosts:
-                from babblecast.network import is_babblecast_subnet_ip
+                from babblecast.address import is_babblecast_ip
 
-                adv_hosts = [ip for ip in local_ipv4_addresses() if is_babblecast_subnet_ip(ip)]
+                adv_hosts = [ip for ip in local_ipv4_addresses() if is_babblecast_ip(ip)]
             if self.host not in ("0.0.0.0", "127.0.0.1") and self.host not in adv_hosts:
                 adv_hosts.insert(0, self.host)
             if adv_hosts:
@@ -632,7 +632,7 @@ class BabbleCastHub:
                 self._advertiser.start()
             else:
                 logger.warning(
-                    "No BabbleCast IP configured (11.2.9.x) — mDNS advertisement skipped"
+                    "No BabbleCast IP configured (11.2.x.x) — mDNS advertisement skipped"
                 )
         logger.info("BabbleCast hub listening ws=%s udp=%s", self.ws_port, self.udp_port)
 

@@ -13,9 +13,14 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.uix.label import MDLabel
 from kivymd.uix.textfield import MDTextField
 
+from babblecast.address import (
+    allocate_babblecast_ip,
+    babblecast_auto_subnet,
+    babblecast_prefix,
+    validate_address_suffix,
+)
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import MAX_NAME_LEN, babblecast_subnet_example_host, babblecast_subnet_prefix
-from babblecast.network import is_babblecast_subnet_ip
+from babblecast.constants import MAX_NAME_LEN
 
 _ERROR_COLOR = (0.97, 0.46, 0.56, 1)
 
@@ -109,22 +114,31 @@ def prompt_connect(
 def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
     """Returns (server_name, display_name, password, babblecast_ip) via callback."""
     settings = get_settings()
-    example = babblecast_subnet_example_host(10)
+    prefix = babblecast_prefix()
     server_field = MDTextField(
         hint_text="Server name (Discover)",
         text=settings.hosted_server_name or settings.display_name or socket.gethostname(),
         size_hint_y=None,
         height=dp(48),
     )
-    ip_field = MDTextField(
-        hint_text=f"Your BabbleCast IP ({babblecast_subnet_prefix()}.x)",
-        text=settings.babblecast_ip or example,
-        size_hint_y=None,
-        height=dp(48),
-    )
     name_field = MDTextField(
         hint_text="Your display name",
         text=settings.display_name or socket.gethostname(),
+        size_hint_y=None,
+        height=dp(48),
+    )
+    custom_row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
+    custom_cb = MDCheckbox(
+        size_hint=(None, None),
+        size=(dp(32), dp(32)),
+        active=settings.babblecast_custom_address,
+    )
+    custom_row.add_widget(custom_cb)
+    custom_row.add_widget(MDLabel(text="Custom BabbleCast address", size_hint_x=1))
+    suffix_field = MDTextField(
+        hint_text=f"After {prefix}. — e.g. 9 or 9.10",
+        text=settings.babblecast_address_suffix,
+        disabled=not settings.babblecast_custom_address,
         size_hint_y=None,
         height=dp(48),
     )
@@ -140,20 +154,36 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
         height=dp(48),
     )
 
+    def on_custom(_instance, value: bool) -> None:
+        suffix_field.disabled = not value
+        if not value:
+            suffix_field.text = ""
+
     def on_protect(_instance, value: bool) -> None:
         password_field.disabled = not value
         if not value:
             password_field.text = ""
 
+    custom_cb.bind(active=on_custom)
     protect_cb.bind(active=on_protect)
 
     error_label = _error_label()
     body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
     body.add_widget(server_field)
-    body.add_widget(ip_field)
     body.add_widget(name_field)
+    body.add_widget(custom_row)
+    body.add_widget(suffix_field)
     body.add_widget(protect_row)
     body.add_widget(password_field)
+    body.add_widget(
+        MDLabel(
+            text=f"Auto: picks a free {babblecast_auto_subnet()} address. Custom: you choose domain/host octets.",
+            theme_text_color="Custom",
+            text_color=(0.6, 0.65, 0.75, 1),
+            font_style="Caption",
+            size_hint_y=None,
+        )
+    )
     body.add_widget(error_label)
     holder: list[MDDialog] = []
 
@@ -165,21 +195,28 @@ def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
         if not server:
             _set_error(error_label, "Enter a server name.")
             return
-        bbc_ip = ip_field.text.strip()
-        if not is_babblecast_subnet_ip(bbc_ip):
-            _set_error(
-                error_label,
-                f"Use an IP in {babblecast_subnet_prefix()}.x (e.g. {example}).",
-            )
-            return
+        custom = bool(custom_cb.active)
+        suffix = suffix_field.text.strip()
+        if custom:
+            err = validate_address_suffix(suffix)
+            if err:
+                _set_error(error_label, err)
+                return
         name = _clean_name(name_field.text)
         pwd = password_field.text if protect_cb.active else ""
         if protect_cb.active and not pwd.strip():
             _set_error(error_label, "Enter a password or turn off protection.")
             return
+        try:
+            bbc_ip = allocate_babblecast_ip(custom=custom, suffix=suffix)
+        except (ValueError, RuntimeError) as exc:
+            _set_error(error_label, str(exc))
+            return
         _set_error(error_label, "")
         settings.hosted_server_name = server
         settings.babblecast_ip = bbc_ip
+        settings.babblecast_custom_address = custom
+        settings.babblecast_address_suffix = suffix if custom else ""
         settings.display_name = name
         save_settings(settings)
         dismiss()

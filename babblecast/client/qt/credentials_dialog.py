@@ -17,9 +17,14 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from babblecast.config import get_settings
-from babblecast.constants import MAX_NAME_LEN, babblecast_subnet_example_host, babblecast_subnet_prefix
-from babblecast.network import is_babblecast_subnet_ip
+from babblecast.address import (
+    allocate_babblecast_ip,
+    babblecast_auto_subnet,
+    babblecast_prefix,
+    validate_address_suffix,
+)
+from babblecast.config import get_settings, save_settings
+from babblecast.constants import MAX_NAME_LEN
 
 
 def _clean_name(text: str) -> str:
@@ -76,22 +81,35 @@ class ConnectCredentialsDialog(QDialog):
 
 
 class HostCredentialsDialog(QDialog):
-    """Ask server name, display name, and optional password when hosting."""
+    """Ask server name, display name, optional custom address, and password when hosting."""
 
     def __init__(self, default_server: str, default_name: str, parent=None) -> None:
         super().__init__(parent)
+        self._resolved_ip = ""
+        settings = get_settings()
+        prefix = babblecast_prefix()
         self.setWindowTitle("Host server")
         layout = QFormLayout(self)
         self._server = QLineEdit(default_server or default_name or socket.gethostname())
         self._server.setPlaceholderText("Name others see in Discover")
         layout.addRow("Server name", self._server)
-        settings = get_settings()
-        self._babblecast_ip = QLineEdit(settings.babblecast_ip or babblecast_subnet_example_host(10))
-        self._babblecast_ip.setPlaceholderText(f"{babblecast_subnet_prefix()}.x — your BabbleCast address")
-        layout.addRow("BabbleCast IP", self._babblecast_ip)
         self._name = QLineEdit(default_name or socket.gethostname())
         self._name.setPlaceholderText("Your display name on this server")
         layout.addRow("Your name", self._name)
+        self._custom = QCheckBox("Custom BabbleCast address")
+        self._custom.setChecked(settings.babblecast_custom_address)
+        self._custom.toggled.connect(self._on_custom_toggled)
+        layout.addRow(self._custom)
+        self._suffix = QLineEdit(settings.babblecast_address_suffix)
+        self._suffix.setPlaceholderText(f"After {prefix}. — e.g. 9 or 9.10")
+        self._suffix.setEnabled(settings.babblecast_custom_address)
+        layout.addRow("Address suffix", self._suffix)
+        layout.addRow(
+            QLabel(
+                f"Leave custom off for an auto free address in {babblecast_auto_subnet()}. "
+                "Custom: pick domain (e.g. 42) or full host (42.10)."
+            )
+        )
         self._protect = QCheckBox("Password protect")
         self._protect.setChecked(False)
         self._protect.toggled.connect(self._on_protect_toggled)
@@ -108,6 +126,11 @@ class HostCredentialsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def _on_custom_toggled(self, checked: bool) -> None:
+        self._suffix.setEnabled(checked)
+        if not checked:
+            self._suffix.clear()
+
     def _on_protect_toggled(self, checked: bool) -> None:
         self._password.setEnabled(checked)
         if not checked:
@@ -123,13 +146,23 @@ class HostCredentialsDialog(QDialog):
         if self._protect.isChecked() and not self._password.text():
             QMessageBox.warning(self, "BabbleCast", "Enter a password or uncheck Password protect.")
             return
-        if not is_babblecast_subnet_ip(self._babblecast_ip.text().strip()):
-            QMessageBox.warning(
-                self,
-                "BabbleCast",
-                f"Enter an IP in {babblecast_subnet_prefix()}.x (e.g. {babblecast_subnet_example_host(10)}).",
-            )
+        custom = self._custom.isChecked()
+        suffix = self._suffix.text().strip()
+        if custom:
+            err = validate_address_suffix(suffix)
+            if err:
+                QMessageBox.warning(self, "BabbleCast", err)
+                return
+        try:
+            self._resolved_ip = allocate_babblecast_ip(custom=custom, suffix=suffix)
+        except (ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "BabbleCast", str(exc))
             return
+        settings = get_settings()
+        settings.babblecast_ip = self._resolved_ip
+        settings.babblecast_custom_address = custom
+        settings.babblecast_address_suffix = suffix if custom else ""
+        save_settings(settings)
         self.accept()
 
     @property
@@ -148,7 +181,7 @@ class HostCredentialsDialog(QDialog):
 
     @property
     def babblecast_ip(self) -> str:
-        return self._babblecast_ip.text().strip()
+        return self._resolved_ip
 
 
 class DisconnectConfirmDialog(QDialog):
@@ -168,7 +201,6 @@ class DisconnectConfirmDialog(QDialog):
         disconnect.setStyleSheet("color: #f7768e; font-weight: 600;")
         disconnect.clicked.connect(self.accept)
         buttons.addWidget(cancel)
-        buttons.addStretch()
         buttons.addWidget(disconnect)
         layout.addLayout(buttons)
 

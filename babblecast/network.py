@@ -7,7 +7,7 @@ import platform
 import socket
 import struct
 
-from babblecast.constants import BABBLECAST_SUBNET, babblecast_subnet_prefix
+from babblecast.address import is_babblecast_ip
 
 try:
     import fcntl
@@ -104,12 +104,7 @@ def pick_reachable_server_ip(
     *,
     client_ips: list[str] | None = None,
 ) -> str:
-    """Pick the server IP most likely reachable from this machine.
-
-    When a host advertises multiple interfaces (wired + Wi‑Fi), clients on
-    another machine must use an address on the *same subnet* — not 127.0.0.1
-    and not the server's unrelated VLAN address.
-    """
+    """Pick the server IP most likely reachable from this machine."""
     client_ips = client_ips or local_ipv4_addresses()
     candidates = [ip for ip in server_ips if ip and not ip.startswith("127.")]
     if not candidates:
@@ -118,66 +113,48 @@ def pick_reachable_server_ip(
         for client_ip in client_ips:
             if same_subnet_24(server_ip, client_ip):
                 return server_ip
+    babblecast = [ip for ip in candidates if is_babblecast_ip(ip)]
+    if babblecast:
+        return babblecast[0]
     return candidates[0]
 
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore[assignment]
-
-
-def is_babblecast_subnet_ip(ip: str) -> bool:
-    """True when ``ip`` is in the project BabbleCast range (e.g. 11.2.9.x)."""
-    parts = ip.strip().split(".")
-    if len(parts) != 4:
-        return False
-    try:
-        octets = tuple(int(p) for p in parts)
-    except ValueError:
-        return False
-    if any(o < 0 or o > 255 for o in octets):
-        return False
-    return octets[:3] == BABBLECAST_SUBNET
-
-
-def babblecast_scan_targets() -> list[str]:
-    """All host addresses to probe in the BabbleCast subnet (1–254)."""
-    prefix = babblecast_subnet_prefix()
-    return [f"{prefix}.{n}" for n in range(1, 255)]
-
-
 def advertise_hosts_for_settings() -> list[str]:
-    """mDNS addresses to publish — only the configured BabbleCast IP."""
+    """mDNS addresses to publish — the configured BabbleCast IP."""
     from babblecast.config import get_settings
 
     ip = get_settings().babblecast_ip.strip()
-    if ip and is_babblecast_subnet_ip(ip):
+    if ip and is_babblecast_ip(ip):
         return [ip]
     return []
 
 
 def primary_lan_ipv4() -> str:
-    """Address others should use to reach this host on the BabbleCast subnet."""
+    """BabbleCast virtual IP others should use to reach this host."""
     from babblecast.config import get_settings
 
     ip = get_settings().babblecast_ip.strip()
-    if ip and is_babblecast_subnet_ip(ip):
+    if ip and is_babblecast_ip(ip):
         return ip
-    ips = local_ipv4_addresses()
-    for candidate in ips:
-        if is_babblecast_subnet_ip(candidate):
-            return candidate
-    return ips[0] if ips else "127.0.0.1"
+    return "127.0.0.1"
 
 
 def is_local_host(host: str) -> bool:
     """True when host refers to this machine (loopback or a local interface IP)."""
+    from babblecast.config import get_settings
+
     normalized = host.strip().lower()
     if normalized in ("127.0.0.1", "localhost", "::1"):
+        return True
+    settings_ip = get_settings().babblecast_ip.strip()
+    if settings_ip and normalized == settings_ip.lower():
         return True
     try:
         socket.inet_aton(normalized)
     except OSError:
         return normalized.endswith(".babblecast.local")
     return normalized in local_ipv4_addresses()
+
+
+# Back-compat aliases
+is_babblecast_subnet_ip = is_babblecast_ip

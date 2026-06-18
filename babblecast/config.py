@@ -33,6 +33,8 @@ class UserSettings:
     last_server_port: int = 9513
     hosted_server_name: str = ""
     babblecast_ip: str = ""
+    babblecast_custom_address: bool = False
+    babblecast_address_suffix: str = ""
     per_user_volumes: dict[str, float] = field(default_factory=dict)
     per_user_muted: dict[str, bool] = field(default_factory=dict)
     window_geometry: list[int] | None = None
@@ -60,6 +62,8 @@ class UserSettings:
                 last_server_port=int(raw.get("last_server_port", 9513)),
                 hosted_server_name=str(raw.get("hosted_server_name", "")),
                 babblecast_ip=str(raw.get("babblecast_ip", "")),
+                babblecast_custom_address=bool(raw.get("babblecast_custom_address", False)),
+                babblecast_address_suffix=str(raw.get("babblecast_address_suffix", "")),
                 per_user_volumes=dict(raw.get("per_user_volumes", {})),
                 per_user_muted={k: bool(v) for k, v in raw.get("per_user_muted", {}).items()},
                 window_geometry=raw.get("window_geometry"),

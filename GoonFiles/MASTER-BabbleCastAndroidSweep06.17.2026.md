@@ -90,3 +90,21 @@ Goon Squad parallel audit of `mobile/` + Android audio paths. Fixes applied in c
 - [x] Back out of app — no crash in logcat
 - [x] Gate + suppression sliders affect live mic path
 - [ ] PC on LAN appears in Discover — requires phone Location + same subnet (code path verified; router AP isolation can still block)
+
+---
+
+## Addressing sweep — 06.17.2026 (both architectures)
+
+**Goon files:** `BabbleCastAndroidAddressingSweep06.17.2026.md`, `BabbleCastDesktopAddressingSweep06.17.2026.md`
+
+| Item | Android | Desktop |
+|------|---------|---------|
+| `babblecast/address.py` shared module | ✓ in APK | ✓ |
+| Auto host → always `11.2.9.x` | ✓ | ✓ |
+| Custom address checkbox + suffix | ✓ `prompt_host` | ✓ `HostCredentialsDialog` |
+| Manual connect IP validation | ✓ `connect_to` | N/A (Discover only) |
+| mDNS advertises `babblecast_ip` | ✓ shared hub | ✓ |
+| Scan fallback `11.2.9.x` + custom domain | ✓ | ✓ |
+| APK rebuilt + installed | ✓ `RFCY81V4G9Y` | — |
+
+**Open:** 0 code items. Device smoke for auto/custom host on phone still manual.

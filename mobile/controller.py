@@ -18,7 +18,8 @@ from babblecast.client.room_controller import (
     should_disconnect_failed_connect,
 )
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import DEFAULT_WS_PORT, babblecast_subnet_prefix, composite_participant_key
+from babblecast.address import babblecast_auto_subnet, babblecast_prefix, is_babblecast_ip
+from babblecast.constants import DEFAULT_WS_PORT, MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
 from babblecast.network import is_local_host
 from babblecast.protocol import is_name_taken_error, is_password_error
@@ -167,7 +168,7 @@ class BabbleController:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status(
-                f"No servers yet — scanning {babblecast_subnet_prefix()}.x, or enter IP below"
+                f"No servers yet — scanning {babblecast_auto_subnet()}, or enter address below"
             )
 
     def _password_required_for(self, host: str, port: int) -> bool:
@@ -192,6 +193,9 @@ class BabbleController:
         host = host.strip()
         if not host:
             self.set_status("Enter a server IP or hostname")
+            return
+        if host not in ("127.0.0.1", "localhost") and not is_babblecast_ip(host) and not host.endswith(".babblecast.local"):
+            self.set_status(f"Use {babblecast_prefix()}.x.x, name.babblecast.local, or 127.0.0.1")
             return
         try:
             port = int(port)
@@ -437,6 +441,9 @@ class BabbleController:
         lan = self._embedded.lan_host if self._embedded else host
         slug_host = service_hostname(slugify_server_name(self._settings.hosted_server_name or "BabbleCast"))
         self.set_status(f"Hosting on {lan}:{port} — others: {slug_host} or Discover")
+        screen = self.app.screen("connect")
+        if getattr(screen, "_host_field", None) and self._settings.babblecast_ip:
+            screen._host_field.text = self._settings.babblecast_ip
         if self._pending_embedded_connect and self._embedded and self._embedded.running:
             self._pending_embedded_connect = False
             screen = self.app.screen("connect")
@@ -477,12 +484,6 @@ class BabbleController:
         if port != self._embedded.ws_port:
             return False
         return is_local_host(host)
-
-    def _join_local_host(self) -> None:
-        """Legacy — host connect is driven by EmbeddedServer.on_started."""
-        screen = self.app.screen("connect")
-        if self._embedded and self._embedded.running:
-            self.connect_to(self._embedded.host, self._embedded.ws_port, screen.display_name)
 
     def _on_connect_error(self, link_id: str, message: str, error_code: str | None = None) -> None:
         if not self._alive():

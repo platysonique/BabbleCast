@@ -21,6 +21,23 @@
 
 ---
 
+## 06.17.2026 — Addressing sweep (Desktop + Android parity)
+
+**Goon files:** `BabbleCastDesktopAddressingSweep06.17.2026.md`, `BabbleCastAndroidAddressingSweep06.17.2026.md`
+
+| Finding | Status |
+|---------|--------|
+| Scalable `11.2.x.x` virtual addressing (`address.py`) | **FIXED** |
+| Auto allocation always `11.2.9.x` when custom off | **FIXED** |
+| Custom domain checkbox on host (Qt + mobile) | **FIXED** |
+| Settings: `babblecast_ip`, `babblecast_custom_address`, `babblecast_address_suffix` | **FIXED** |
+| mDNS + scan use configured virtual IP | **FIXED** |
+| Android APK with changes | **BUILT + INSTALLED** |
+
+**Open goon items:** 0
+
+---
+
 ## 06.17.2026 — VERIFICATION (automated only)
 
 - **49/49 pytest** pass

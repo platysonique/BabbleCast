@@ -40,6 +40,7 @@ from babblecast.client.qt.styles import STYLESHEET
 from babblecast.client.qt.tap_chat_dialog import TapChatDialog
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import DEFAULT_WS_PORT, composite_participant_key
+from babblecast.address import babblecast_prefix, is_babblecast_ip
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
 from babblecast.client.room_controller import (
     chat_lines,
@@ -344,9 +345,10 @@ class MainWindow(QMainWindow):
         item = self._server_list.currentItem()
         if item:
             host, port, discovered = item.data(Qt.ItemDataRole.UserRole)
+            connect_host = discovered.connect_host if discovered else host
             label = discovered.label if discovered else item.text()
             password_required = bool(discovered and discovered.password_required)
-            self._connect(host, port, label=label, password_required=password_required)
+            self._connect(connect_host, port, label=label, password_required=password_required)
 
     def _connect(
         self,
@@ -358,6 +360,17 @@ class MainWindow(QMainWindow):
         password_required: bool = False,
         skip_name_prompt: bool = False,
     ) -> None:
+        host = host.strip()
+        if (
+            host
+            and host not in ("127.0.0.1", "localhost")
+            and not is_babblecast_ip(host)
+            and not host.endswith(".babblecast.local")
+        ):
+            self._status.setText(
+                f"Use {babblecast_prefix()}.x.x, name.babblecast.local, or 127.0.0.1"
+            )
+            return
         if self._already_connected(host, port):
             self._status.setText(f"Already connected to {host}:{port}")
             return

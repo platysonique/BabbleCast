@@ -3,9 +3,11 @@
 SERVICE_TYPE = "_babblecast._tcp.local."
 LOCAL_DOMAIN = "babblecast.local"
 
-# BabbleCast LAN — each machine picks its address in this range (e.g. 11.2.9.10).
+# BabbleCast virtual LAN — always 11.2.x.x; custom hosts pick third/fourth octets.
+# Auto allocation (host dialog unchecked) always uses 11.2.9.x for predictable automation.
 # Self-connect on the same machine still uses 127.0.0.1.
-BABBLECAST_SUBNET = (11, 2, 9)
+BABBLECAST_FIXED_OCTETS = (11, 2)
+BABBLECAST_AUTO_DOMAIN = 9
 
 DEFAULT_WS_PORT = 9513
 DEFAULT_UDP_PORT = 9514
@@ -28,9 +30,13 @@ def composite_participant_key(link_id: str, client_id: str) -> str:
 
 
 def babblecast_subnet_prefix() -> str:
-    """Dotted prefix for the BabbleCast subnet, e.g. ``11.2.9``."""
-    return ".".join(str(o) for o in BABBLECAST_SUBNET)
+    """Legacy alias — use ``babblecast.address.babblecast_prefix()``."""
+    from babblecast.address import babblecast_prefix
+
+    return babblecast_prefix()
 
 
-def babblecast_subnet_example_host(last_octet: int = 10) -> str:
-    return f"{babblecast_subnet_prefix()}.{last_octet}"
+def babblecast_subnet_example_host(last_octet: int = 10, domain: int = 9) -> str:
+    from babblecast.address import format_babblecast_ip
+
+    return format_babblecast_ip(domain, last_octet)
