@@ -381,6 +381,7 @@ class BabbleController:
         panel = getattr(live, "detail_panel", None)
         if panel:
             panel.sync_from_settings()
+        self._refresh_admin_room_password()
         self._sync_input_monitoring()
 
     def _on_local_mic_level(self, level: float) -> None:
