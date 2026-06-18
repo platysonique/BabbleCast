@@ -13,7 +13,7 @@ from kivymd.uix.card import MDCard
 from kivymd.uix.screen import MDScreen
 
 from babblecast.client.bridge import BridgeManager
-from babblecast.address import babblecast_auto_subnet, babblecast_prefix
+from babblecast.address import babblecast_prefix
 from babblecast.config import get_settings
 from babblecast.constants import babblecast_subnet_example_host, DEFAULT_WS_PORT
 from mobile.theme import ACCENT, BG, MUTED, SUCCESS, SURFACE, TEXT
@@ -60,7 +60,7 @@ class ConnectScreen(MDScreen):
         server_scroll.add_widget(self._server_box)
 
         manual_label = MDLabel(
-            text=f"Or enter {babblecast_prefix()}.x.x (auto hosts use {babblecast_auto_subnet()}) + port {DEFAULT_WS_PORT}",
+            text=f"Or enter PC LAN IP, {babblecast_prefix()}.x.x, or name.babblecast.local + port {DEFAULT_WS_PORT}",
             font_style="H6",
             theme_text_color="Custom",
             text_color=TEXT,

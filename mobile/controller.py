@@ -18,10 +18,9 @@ from babblecast.client.room_controller import (
     should_disconnect_failed_connect,
 )
 from babblecast.config import get_settings, save_settings
-from babblecast.address import babblecast_auto_subnet, babblecast_prefix, is_babblecast_ip
 from babblecast.constants import DEFAULT_WS_PORT, MAX_NAME_LEN, composite_participant_key
 from babblecast.discovery import ServerDiscovery
-from babblecast.network import is_local_host
+from babblecast.network import is_local_host, is_valid_connect_target
 from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
@@ -168,7 +167,7 @@ class BabbleController:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status(
-                f"No servers yet — scanning {babblecast_auto_subnet()}, or enter address below"
+                f"No servers yet — scanning your LAN subnet, or enter address below"
             )
 
     def _password_required_for(self, host: str, port: int) -> bool:
@@ -194,8 +193,8 @@ class BabbleController:
         if not host:
             self.set_status("Enter a server IP or hostname")
             return
-        if host not in ("127.0.0.1", "localhost") and not is_babblecast_ip(host) and not host.endswith(".babblecast.local"):
-            self.set_status(f"Use {babblecast_prefix()}.x.x, name.babblecast.local, or 127.0.0.1")
+        if host and not is_valid_connect_target(host):
+            self.set_status("Use a BabbleCast address, LAN IP, name.babblecast.local, or 127.0.0.1")
             return
         try:
             port = int(port)

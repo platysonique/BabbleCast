@@ -109,24 +109,48 @@ def pick_reachable_server_ip(
     candidates = [ip for ip in server_ips if ip and not ip.startswith("127.")]
     if not candidates:
         return server_ips[0] if server_ips else ""
-    for server_ip in candidates:
+    # Prefer real LAN addresses over virtual BabbleCast IDs (11.2.x.x).
+    reachable = [ip for ip in candidates if not is_babblecast_ip(ip)] or candidates
+    for server_ip in reachable:
         for client_ip in client_ips:
             if same_subnet_24(server_ip, client_ip):
                 return server_ip
-    babblecast = [ip for ip in candidates if is_babblecast_ip(ip)]
-    if babblecast:
-        return babblecast[0]
-    return candidates[0]
+    return reachable[0]
+
+
+def is_private_lan_ipv4(ip: str) -> bool:
+    """True for typical home/office private IPv4 ranges."""
+    parts = ip.strip().split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        a, b, _c, _d = (int(p) for p in parts)
+    except ValueError:
+        return False
+    if a == 10:
+        return True
+    if a == 172 and 16 <= b <= 31:
+        return True
+    if a == 192 and b == 168:
+        return True
+    return False
+
+
+def is_valid_connect_target(host: str) -> bool:
+    """Hosts clients may dial: loopback, BabbleCast virtual IP, mDNS name, or LAN IP."""
+    normalized = host.strip().lower()
+    if normalized in ("127.0.0.1", "localhost"):
+        return True
+    if normalized.endswith(".babblecast.local"):
+        return True
+    if is_babblecast_ip(host):
+        return True
+    return is_private_lan_ipv4(host)
 
 
 def advertise_hosts_for_settings() -> list[str]:
-    """mDNS addresses to publish — the configured BabbleCast IP."""
-    from babblecast.config import get_settings
-
-    ip = get_settings().babblecast_ip.strip()
-    if ip and is_babblecast_ip(ip):
-        return [ip]
-    return []
+    """Real LAN IPv4 addresses for mDNS A records (physically reachable on the network)."""
+    return local_ipv4_addresses()
 
 
 def primary_lan_ipv4() -> str:
