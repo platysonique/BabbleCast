@@ -33,6 +33,7 @@ class SideDetailPanel(MDBoxLayout):
         self._peer_link_id = ""
         self._peer_client_id = ""
         self._peer_open = False
+        self._loading_settings = False
 
         s = controller.settings
         self._panel_expanded = bool(s.ui_panel_expanded)
@@ -284,16 +285,20 @@ class SideDetailPanel(MDBoxLayout):
         self._load_settings(s)
 
     def _load_settings(self, s) -> None:
-        self._gate_slider.value = int(s.gate_threshold_db)
-        self._noise_slider.value = int(s.noise_suppression * 100)
-        self._master_slider.value = int(s.output_volume * 100)
-        self._mic_vol_slider.value = int(s.input_volume * 100)
-        self._gate_label.text = f"Noise gate: {int(s.gate_threshold_db)} dB"
-        self._noise_label.text = f"Noise suppression: {int(s.noise_suppression * 100)}%"
-        self._master_label.text = f"Master output: {int(s.output_volume * 100)}%"
-        self._mic_caption.text = f"Mic · {int(s.input_volume * 100)}%"
-        self._refresh_route_ui()
-        self._refresh_host_pwd_status()
+        self._loading_settings = True
+        try:
+            self._gate_slider.value = int(s.gate_threshold_db)
+            self._noise_slider.value = int(s.noise_suppression * 100)
+            self._master_slider.value = int(s.output_volume * 100)
+            self._mic_vol_slider.value = int(s.input_volume * 100)
+            self._gate_label.text = f"Noise gate: {int(s.gate_threshold_db)} dB"
+            self._noise_label.text = f"Noise suppression: {int(s.noise_suppression * 100)}%"
+            self._master_label.text = f"Master output: {int(s.output_volume * 100)}%"
+            self._mic_caption.text = f"Mic · {int(s.input_volume * 100)}%"
+            self._refresh_route_ui()
+            self._refresh_host_pwd_status()
+        finally:
+            self._loading_settings = False
 
     def set_room_password_display(self, visible: bool, text: str) -> None:
         if not hasattr(self, "_room_pwd_label"):
@@ -453,18 +458,26 @@ class SideDetailPanel(MDBoxLayout):
 
     def _gate_changed(self, value: float) -> None:
         self._gate_label.text = f"Noise gate: {int(value)} dB"
+        if self._loading_settings:
+            return
         self._controller.set_gate_db(float(value))
 
     def _noise_changed(self, value: float) -> None:
         self._noise_label.text = f"Noise suppression: {int(value)}%"
+        if self._loading_settings:
+            return
         self._controller.set_noise_suppression(value / 100.0)
 
     def _master_changed(self, value: float) -> None:
         self._master_label.text = f"Master output: {int(value)}%"
+        if self._loading_settings:
+            return
         self._controller.set_master_volume(value / 100.0)
 
     def _mic_vol_changed(self, value: float) -> None:
         self._mic_caption.text = f"Mic · {int(value)}%"
+        if self._loading_settings:
+            return
         self._controller.set_input_volume(value / 100.0)
 
     def _toggle_listen(self) -> None:

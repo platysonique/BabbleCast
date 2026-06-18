@@ -291,14 +291,20 @@ class BabbleController:
         save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self.set_status(f"Connecting {host}:{port}…")
-        self._bridge.connect(
-            host,
-            port,
-            password=password,
-            server_operator=self._is_own_server(host, port) or is_local_host(host),
-        )
-        self._sync_input_monitoring()
         self.app.switch_tab("live")
+
+        def _finish_connect(_dt: float) -> None:
+            if not self._alive():
+                return
+            self._bridge.connect(
+                host,
+                port,
+                password=password,
+                server_operator=self._is_own_server(host, port) or is_local_host(host),
+            )
+            self._sync_input_monitoring()
+
+        Clock.schedule_once(_finish_connect, 0)
 
     def host_server(self) -> None:
         if self._embedded and self._embedded.running:
@@ -379,6 +385,11 @@ class BabbleController:
         self._bridge.send_tap(link_id, client_id)
 
     def on_live_enter(self) -> None:
+        Clock.schedule_once(lambda _dt: self._on_live_enter_deferred(), 0)
+
+    def _on_live_enter_deferred(self) -> None:
+        if not self._alive():
+            return
         live = self.app.screen("live")
         panel = getattr(live, "detail_panel", None)
         if panel:

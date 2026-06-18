@@ -522,6 +522,7 @@ class LiveScreen(MDScreen):
             text=link_display_name(link),
             theme_text_color="Custom",
             text_color=TEXT,
+            size_hint_x=1,
         )
         card.add_widget(name_lbl)
         card.bind(on_release=lambda *_: self._set_active(link_id))
@@ -531,27 +532,14 @@ class LiveScreen(MDScreen):
             if hasattr(app, "controller"):
                 app.controller.show_server_info(link_id)
 
-        from kivy.clock import Clock
-
-        state: dict = {}
-
-        def fire_long(_dt) -> None:
-            show_info()
-
-        def touch_down(_card, touch) -> bool:
-            if card.collide_point(*touch.pos):
-                state["ev"] = Clock.schedule_once(fire_long, 0.6)
-            return False
-
-        def touch_up(_card, touch) -> bool:
-            ev = state.get("ev")
-            if ev is not None:
-                Clock.unschedule(ev)  # type: ignore[arg-type]
-                state["ev"] = None
-            return False
-
-        card.bind(on_touch_down=touch_down, on_touch_up=touch_up)
-
+        info = MDIconButton(
+            icon="information-outline",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            size_hint_x=None,
+            width=dp(36),
+            on_release=show_info,
+        )
         listen = MDRaisedButton(
             icon="volume-off" if link.listen_muted else "volume-high",
             md_bg_color=DANGER if link.listen_muted else SUCCESS,
@@ -573,6 +561,7 @@ class LiveScreen(MDScreen):
             on_release=lambda *_: self._disconnect(link_id),
         )
         row.add_widget(card)
+        row.add_widget(info)
         row.add_widget(listen)
         row.add_widget(mic)
         row.add_widget(disc)

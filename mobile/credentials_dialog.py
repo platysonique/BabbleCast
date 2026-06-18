@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 from typing import Callable
 
+from kivy.clock import Clock
 from kivy.metrics import dp
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.button import MDFlatButton, MDRaisedButton
@@ -15,6 +16,7 @@ from kivymd.uix.textfield import MDTextField
 
 from babblecast.config import get_settings, save_settings
 from babblecast.constants import MAX_NAME_LEN, MAX_ROOM_NAME_LEN
+from mobile.display_name import default_display_name
 
 _ERROR_COLOR = (0.97, 0.46, 0.56, 1)
 
@@ -52,7 +54,7 @@ def prompt_connect(
     password_required: bool = False,
 ) -> None:
     settings = get_settings()
-    default = settings.display_name or socket.gethostname()
+    default = default_display_name(settings)
 
     name_field = MDTextField(
         hint_text="Your display name",
@@ -90,7 +92,7 @@ def prompt_connect(
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        on_ok(name, pwd)
+        Clock.schedule_once(lambda _dt, n=name, p=pwd: on_ok(n, p), 0)
 
     dialog = MDDialog(
         title="Connect to server",
@@ -111,13 +113,13 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
     settings = get_settings()
     server_field = MDTextField(
         hint_text="Server name (Discover)",
-        text=settings.hosted_server_name or settings.display_name or socket.gethostname(),
+        text=settings.hosted_server_name or default_display_name(settings),
         size_hint_y=None,
         height=dp(48),
     )
     name_field = MDTextField(
         hint_text="Your display name",
-        text=settings.display_name or socket.gethostname(),
+        text=default_display_name(settings),
         size_hint_y=None,
         height=dp(48),
     )
@@ -176,7 +178,7 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        on_ok(server, name, pwd)
+        Clock.schedule_once(lambda _dt, s=server, n=name, p=pwd: on_ok(s, n, p), 0)
 
     dialog = MDDialog(
         title="Host server",
