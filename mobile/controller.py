@@ -457,6 +457,7 @@ class BabbleController:
         self._embedded = EmbeddedServer(
             server_name=clean,
             server_password=self._own_server_password,
+            host_password=self._settings.host_password,
             on_started=on_started,
             on_failed=on_failed,
             on_stopped=on_stopped,
@@ -814,8 +815,8 @@ class BabbleController:
             creator_id = str(room_meta.get("creator_id", ""))
             if creator_id and session and creator_id != session.client_id:
                 host_note = (
-                    "\n\nTip: set a host password when starting the server "
-                    "to require your password for admin deletes."
+                    "\n\nSet a host password in Your audio → Host admin "
+                    "to lock down admin deletes."
                 )
 
         dialog = MDDialog(
@@ -852,6 +853,12 @@ class BabbleController:
         self.chat_text += line
         live = self.app.screen("live")
         live.chat_text = self.chat_text
+
+    def set_host_password(self, password: str) -> None:
+        self._settings.host_password = password.strip()
+        save_settings(self._settings)
+        if self._embedded and self._embedded.running:
+            self._embedded.set_host_password(self._settings.host_password)
 
     def set_gate_db(self, value: float) -> None:
         self._bridge.set_gate_db(value)

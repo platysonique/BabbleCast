@@ -265,6 +265,7 @@ class MainWindow(QMainWindow):
             on_output_device=self._bridge.set_output_device,
             on_master_volume=self._bridge.set_master_output_volume,
             on_mic_volume=self._bridge.set_input_volume,
+            on_host_password=self._set_host_password,
             on_peer_volume=self._bridge.set_participant_volume,
             on_peer_listen_mute=self._bridge.set_participant_muted,
             on_peer_tap=self._send_tap,
@@ -282,6 +283,7 @@ class MainWindow(QMainWindow):
             self._settings.output_volume * 100,
             self._settings.input_volume * 100,
         )
+        self._drawer.set_host_password_status(bool(self._settings.host_password))
         root.addWidget(self._drawer, 0)
         if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
             self._bridge.ensure_input_monitoring()
@@ -302,6 +304,12 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         self._drawer.set_local_mic_level(level)
+
+    def _set_host_password(self, password: str) -> None:
+        self._settings.host_password = password.strip()
+        save_settings(self._settings)
+        if self._embedded and self._embedded.running:
+            self._embedded.set_host_password(self._settings.host_password)
 
     def _on_panel_expanded_changed(self, expanded: bool) -> None:
         self._settings.ui_panel_expanded = expanded
@@ -436,6 +444,7 @@ class MainWindow(QMainWindow):
         self._embedded = EmbeddedServer(
             server_name=name,
             server_password=self._own_server_password,
+            host_password=self._settings.host_password,
             on_started=_on_started,
             on_failed=_on_failed,
             on_stopped=_on_stopped,
@@ -851,8 +860,8 @@ class MainWindow(QMainWindow):
             creator_id = str(room_meta.get("creator_id", ""))
             if creator_id and session and creator_id != session.client_id:
                 extra = (
-                    "\n\nTip: set a host password when starting the server "
-                    "to require your password for admin deletes."
+                    "\n\nSet a host password in Your audio → Host admin "
+                    "to lock down admin deletes."
                 )
         answer = QMessageBox.question(
             self,

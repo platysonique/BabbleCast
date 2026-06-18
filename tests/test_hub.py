@@ -391,12 +391,12 @@ async def test_server_operator_deletes_with_host_password() -> None:
         ws_port=18785,
         udp_port=18786,
         advertise=False,
-        server_password="hostsecret",
+        host_password="hostsecret",
     )
     await hub.start()
     try:
         async with websockets.connect("ws://127.0.0.1:18785") as ws_guest:
-            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest", password="hostsecret"))
+            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
             decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
 
             await ws_guest.send(encode_msg(MsgType.CREATE_ROOM, name="Vault", password="roomsecret"))
@@ -409,11 +409,10 @@ async def test_server_operator_deletes_with_host_password() -> None:
             assert vault_room
 
         async with websockets.connect("ws://127.0.0.1:18785") as ws_host:
-            await ws_host.send(
-                encode_msg(MsgType.HELLO, name="Boss", server_operator=True, password="hostsecret")
-            )
+            await ws_host.send(encode_msg(MsgType.HELLO, name="Boss", server_operator=True))
             welcome = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
-            assert welcome.get("server_password_protected") is True
+            assert welcome.get("host_password_protected") is True
+            assert welcome.get("server_password_protected") is False
 
             await ws_host.send(encode_msg(MsgType.DELETE_ROOM, room_id=vault_room))
             err = None

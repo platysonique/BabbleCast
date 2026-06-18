@@ -29,7 +29,15 @@ def main() -> None:
     if args.command == "server":
         from babblecast.server.hub import run_server
 
-        run_server(host=args.host, ws_port=args.ws_port, udp_port=args.udp_port, server_name=args.name)
+        from babblecast.config import get_settings, save_settings
+
+        run_server(
+            host=args.host,
+            ws_port=args.ws_port,
+            udp_port=args.udp_port,
+            server_name=args.name,
+            host_password=get_settings().host_password,
+        )
         return
 
     # Default: GUI client

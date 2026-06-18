@@ -96,6 +96,7 @@ class BabbleCastHub:
         server_name: str = "BabbleCast",
         advertise: bool = True,
         server_password: str = "",
+        host_password: str = "",
     ) -> None:
         self.host = host
         self.ws_port = ws_port
@@ -106,6 +107,9 @@ class BabbleCastHub:
         self._password_digest = ""
         if server_password.strip():
             self._password_salt, self._password_digest = make_password_verifier(server_password.strip())
+        self._host_password_salt = ""
+        self._host_password_digest = ""
+        self.set_host_password(host_password)
         self._clients: dict[str, ClientState] = {}
         self._rooms: dict[str, Room] = {}
         self._tap_sessions: dict[str, TapSession] = {}
@@ -119,6 +123,18 @@ class BabbleCastHub:
     @property
     def password_protected(self) -> bool:
         return bool(self._password_digest)
+
+    @property
+    def host_password_protected(self) -> bool:
+        return bool(self._host_password_digest)
+
+    def set_host_password(self, password: str) -> None:
+        pwd = password.strip()
+        if pwd:
+            self._host_password_salt, self._host_password_digest = make_password_verifier(pwd)
+        else:
+            self._host_password_salt = ""
+            self._host_password_digest = ""
 
     def _default_room(self) -> Room:
         for room in self._rooms.values():
@@ -310,7 +326,7 @@ class BabbleCastHub:
                         )
                     )
                     return
-                if self._password_digest:
+                if self._host_password_digest:
                     supplied = str(data.get("host_password", ""))
                     if not supplied:
                         await client.ws.send(
@@ -321,7 +337,9 @@ class BabbleCastHub:
                             )
                         )
                         return
-                    if not check_password(supplied, self._password_salt, self._password_digest):
+                    if not check_password(
+                        supplied, self._host_password_salt, self._host_password_digest
+                    ):
                         await client.ws.send(
                             encode_msg(
                                 MsgType.ERROR,
@@ -633,6 +651,7 @@ class BabbleCastHub:
                     room_name=default.name,
                     server_operator=client.is_server_operator,
                     server_password_protected=self.password_protected,
+                    host_password_protected=self.host_password_protected,
                 )
             )
             await self._send_rooms(client)
@@ -764,6 +783,7 @@ def run_server(
     udp_port: int = DEFAULT_UDP_PORT,
     server_name: str = "BabbleCast",
     server_password: str = "",
+    host_password: str = "",
 ) -> None:
     hub = BabbleCastHub(
         host=host,
@@ -771,5 +791,6 @@ def run_server(
         udp_port=udp_port,
         server_name=server_name,
         server_password=server_password,
+        host_password=host_password,
     )
     asyncio.run(hub.run_forever())

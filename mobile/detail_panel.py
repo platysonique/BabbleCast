@@ -156,6 +156,46 @@ class SideDetailPanel(MDBoxLayout):
             self._route_buttons = {}
         self_layout.add_widget(self._route_row)
 
+        self._host_section = CollapsibleSection(
+            "Host admin",
+            expanded=False,
+            on_toggle=lambda _e: None,
+        )
+        host_layout = self._host_section.body
+        self._host_pwd_status = MDLabel(
+            text="Host password: not set",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            font_style="Caption",
+            size_hint_y=None,
+            height=dp(16),
+        )
+        self._host_pwd_field = MDTextField(
+            hint_text="Your personal admin password",
+            password=True,
+            size_hint_y=None,
+            height=dp(44),
+        )
+        save_row = MDBoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
+        self._host_save_btn = MDFlatButton(
+            text="Save host password",
+            on_release=lambda *_: self._save_host_password(),
+        )
+        save_row.add_widget(self._host_save_btn)
+        host_layout.add_widget(
+            MDLabel(
+                text="Separate from server password. Required to delete others' rooms.",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+            )
+        )
+        host_layout.add_widget(self._host_pwd_status)
+        host_layout.add_widget(self._host_pwd_field)
+        host_layout.add_widget(save_row)
+        self_layout.add_widget(self._host_section)
+
         self._body.add_widget(self._self_section)
 
         self._peer_box = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=1)
@@ -230,6 +270,21 @@ class SideDetailPanel(MDBoxLayout):
         self._master_label.text = f"Master output: {int(s.output_volume * 100)}%"
         self._mic_caption.text = f"Mic · {int(s.input_volume * 100)}%"
         self._refresh_route_ui()
+        self._refresh_host_pwd_status()
+
+    def _refresh_host_pwd_status(self) -> None:
+        if not hasattr(self, "_host_pwd_status"):
+            return
+        is_set = bool(getattr(self._controller.settings, "host_password", ""))
+        self._host_pwd_status.text = "Host password: set" if is_set else "Host password: not set"
+
+    def _save_host_password(self) -> None:
+        pwd = self._host_pwd_field.text.strip()
+        if not pwd:
+            return
+        self._controller.set_host_password(pwd)
+        self._host_pwd_field.text = ""
+        self._refresh_host_pwd_status()
 
     def _refresh_route_ui(self) -> None:
         if not self._route_buttons:

@@ -21,6 +21,7 @@ class EmbeddedServer:
         udp_port: int = DEFAULT_UDP_PORT,
         server_name: str = "BabbleCast",
         server_password: str = "",
+        host_password: str = "",
         on_started: Callable[[str, int], None] | None = None,
         on_failed: Callable[[str], None] | None = None,
         on_stopped: Callable[[], None] | None = None,
@@ -29,6 +30,7 @@ class EmbeddedServer:
         self._udp_port = udp_port
         self._server_name = server_name
         self._server_password = server_password
+        self._host_password = host_password
         self._on_started = on_started
         self._on_failed = on_failed
         self._on_stopped = on_stopped
@@ -64,6 +66,7 @@ class EmbeddedServer:
             udp_port=self._udp_port,
             server_name=self._server_name,
             server_password=self._server_password,
+            host_password=self._host_password,
             advertise=True,
         )
         try:
@@ -93,6 +96,11 @@ class EmbeddedServer:
             return
         self._thread = threading.Thread(target=self._run, daemon=True, name="bbc-embedded-server")
         self._thread.start()
+
+    def set_host_password(self, password: str) -> None:
+        self._host_password = password
+        if self._hub:
+            self._hub.set_host_password(password)
 
     def stop(self) -> None:
         if not self._thread:

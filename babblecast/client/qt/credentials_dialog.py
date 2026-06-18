@@ -93,13 +93,13 @@ class HostCredentialsDialog(QDialog):
                 "others find you via Discover or name.babblecast.local."
             )
         )
-        self._protect = QCheckBox("Host password")
+        self._protect = QCheckBox("Password protect")
         self._protect.setChecked(False)
         self._protect.toggled.connect(self._on_protect_toggled)
         layout.addRow(self._protect)
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password.setPlaceholderText("Your password — guests join; you use for admin")
+        self._password.setPlaceholderText("Server password (for guests)")
         self._password.setEnabled(False)
         layout.addRow("Password", self._password)
         buttons = QDialogButtonBox(
@@ -122,7 +122,7 @@ class HostCredentialsDialog(QDialog):
             QMessageBox.warning(self, "BabbleCast", "Enter your display name.")
             return
         if self._protect.isChecked() and not self._password.text():
-            QMessageBox.warning(self, "BabbleCast", "Enter a host password or uncheck Host password.")
+            QMessageBox.warning(self, "BabbleCast", "Enter a server password or uncheck Password protect.")
             return
         settings = get_settings()
         settings.hosted_server_name = self._server.text().strip()[:MAX_NAME_LEN]
@@ -269,8 +269,8 @@ class HostPasswordConfirmDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Enter the host password you set when starting this server.\n"
-                "This confirms you want to delete someone else's room."
+                "Enter your personal host password from the side panel.\n"
+                "This is separate from the server password guests use to connect."
             )
         )
         self._password = QLineEdit()

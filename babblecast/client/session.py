@@ -91,6 +91,7 @@ class ClientSession:
         self._server_operator = False
         self._is_server_operator = False
         self._server_password_protected = False
+        self._host_password_protected = False
         self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
@@ -136,6 +137,10 @@ class ClientSession:
     @property
     def server_password_protected(self) -> bool:
         return self._server_password_protected
+
+    @property
+    def host_password_protected(self) -> bool:
+        return self._host_password_protected
 
     @property
     def connected(self) -> bool:
@@ -282,6 +287,7 @@ class ClientSession:
             self._welcomed = True
             self._is_server_operator = bool(data.get("server_operator"))
             self._server_password_protected = bool(data.get("server_password_protected"))
+            self._host_password_protected = bool(data.get("host_password_protected"))
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_name = str(data.get("server_name", ""))

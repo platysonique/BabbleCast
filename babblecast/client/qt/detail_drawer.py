@@ -40,6 +40,7 @@ class DetailDrawer(QWidget):
         on_output_device,
         on_master_volume,
         on_mic_volume,
+        on_host_password,
         on_peer_volume,
         on_peer_listen_mute,
         on_peer_tap,
@@ -56,6 +57,7 @@ class DetailDrawer(QWidget):
         self._on_output_device = on_output_device
         self._on_master_volume = on_master_volume
         self._on_mic_volume = on_mic_volume
+        self._on_host_password = on_host_password
         self._on_peer_volume = on_peer_volume
         self._on_peer_listen_mute = on_peer_listen_mute
         self._on_peer_tap = on_peer_tap
@@ -132,6 +134,18 @@ class DetailDrawer(QWidget):
         self_layout.addWidget(self._input_combo)
         self_layout.addWidget(QLabel("Speaker device"))
         self_layout.addWidget(self._output_combo)
+
+        self._host_pwd_status = QLabel("Host password: not set")
+        self._host_pwd_status.setStyleSheet("color: #565f89; font-size: 11px;")
+        self._host_pwd = QLineEdit()
+        self._host_pwd.setEchoMode(QLineEdit.EchoMode.Password)
+        self._host_pwd.setPlaceholderText("Your personal admin password")
+        self._host_pwd_save = QPushButton("Save host password")
+        self._host_pwd_save.clicked.connect(self._save_host_password)
+        self_layout.addWidget(QLabel("Host password"))
+        self_layout.addWidget(self._host_pwd_status)
+        self_layout.addWidget(self._host_pwd)
+        self_layout.addWidget(self._host_pwd_save)
         panel_layout.addWidget(self._self_section, 0, Qt.AlignmentFlag.AlignTop)
 
         self._peer_block = QWidget()
@@ -411,6 +425,19 @@ class DetailDrawer(QWidget):
     def _mic_volume_changed(self, value: int) -> None:
         self._self_strip.set_volume_label(f"{value}%")
         self._on_mic_volume(value / 100.0)
+
+    def set_host_password_status(self, is_set: bool) -> None:
+        self._host_pwd_status.setText(
+            "Host password: set" if is_set else "Host password: not set"
+        )
+
+    def _save_host_password(self) -> None:
+        pwd = self._host_pwd.text().strip()
+        if not pwd:
+            return
+        self._on_host_password(pwd)
+        self._host_pwd.clear()
+        self.set_host_password_status(True)
 
     def _input_changed(self, index: int) -> None:
         if index >= 0:

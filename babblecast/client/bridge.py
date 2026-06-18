@@ -346,7 +346,7 @@ class BridgeManager:
         creator_id = str(room_meta.get("creator_id", ""))
         if not creator_id or creator_id == session.client_id:
             return False
-        return session.server_password_protected
+        return session.host_password_protected
 
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
         link = self._links.get(link_id)
