@@ -29,6 +29,20 @@ def _jni():
     return autoclass
 
 
+def _java_byte_array(size: int):
+    """Allocate a Java byte[] for AudioRecord.read / AudioTrack.write."""
+    return _jni()("[B")(size)
+
+
+def _copy_java_to_python(j_buf, n: int, py_buf: bytearray) -> None:
+    """pyjnius does not write AudioRecord results back into Python buffers."""
+    py_buf[:n] = j_buf[:n]
+
+
+def _copy_python_to_java(j_buf, data: bytes) -> None:
+    j_buf[: len(data)] = data
+
+
 class AndroidMicCapture:
     def __init__(
         self,
@@ -48,6 +62,10 @@ class AndroidMicCapture:
         self._running = False
         self._thread: threading.Thread | None = None
         self._record = None
+        self._read_j_buf = None
+        self._read_py_buf: bytearray | None = None
+        self._read_buf_size = 0
+        self._read_failures = 0
 
     @property
     def muted(self) -> bool:
@@ -74,16 +92,17 @@ class AndroidMicCapture:
         self._input_volume = max(0.0, min(2.0, value))
 
     def _loop(self) -> None:
-        buf_size = FRAME_SAMPLES * 4
-        data = bytearray(buf_size)
+        assert self._read_j_buf is not None and self._read_py_buf is not None
+        buf_size = self._read_buf_size
         while self._running:
-            from jnius import cast
-
-            jbuf = cast("byte[]", data)
-            n = int(self._record.read(jbuf, 0, buf_size))
+            n = int(self._record.read(self._read_j_buf, 0, buf_size))
             if n <= 0:
+                self._read_failures += 1
+                if self._read_failures <= 5:
+                    logger.warning("AudioRecord.read returned %d", n)
                 continue
-            samples = np.frombuffer(bytes(data[:n]), dtype=np.int16)
+            _copy_java_to_python(self._read_j_buf, n, self._read_py_buf)
+            samples = np.frombuffer(memoryview(self._read_py_buf)[:n], dtype=np.int16)
             if len(samples) < FRAME_SAMPLES:
                 continue
             for i in range(0, len(samples) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
@@ -121,6 +140,10 @@ class AndroidMicCapture:
         )
         if self._record.getState() != 1:  # STATE_INITIALIZED
             raise RuntimeError("AudioRecord failed to initialize")
+        self._read_buf_size = min_buf * 2
+        self._read_j_buf = _java_byte_array(self._read_buf_size)
+        self._read_py_buf = bytearray(self._read_buf_size)
+        self._read_failures = 0
         self._record.startRecording()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-mic")
@@ -146,6 +169,8 @@ class AndroidMicCapture:
             except Exception:
                 pass
             self._record = None
+        self._read_j_buf = None
+        self._read_py_buf = None
 
     def set_device(self, device_key: str | None) -> None:
         pass
@@ -175,6 +200,8 @@ class AndroidSpeakerOutput:
         self._route = normalize_audio_route(None)
         self._write_failures = 0
         self._first_pcm_keys: set[str] = set()
+        self._write_j_buf = None
+        self._write_j_buf_size = 0
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
@@ -223,12 +250,18 @@ class AndroidSpeakerOutput:
             mix[:n] += chunk[:n] * vol
         return np.clip(mix * self._master_volume, -1.0, 1.0)
 
-    def _write_pcm(self, pcm: np.ndarray) -> None:
-        from jnius import cast
+    def _ensure_write_buffer(self, out_len: int) -> None:
+        if self._write_j_buf is None or self._write_j_buf_size < out_len:
+            self._write_j_buf_size = max(out_len, FRAME_BYTES)
+            self._write_j_buf = _java_byte_array(self._write_j_buf_size)
 
+    def _write_pcm(self, pcm: np.ndarray) -> None:
         data = pcm.astype("<i2", copy=False).tobytes()
-        jdata = cast("byte[]", bytearray(data))
-        written = int(self._track.write(jdata, 0, len(data)))
+        out_len = len(data)
+        self._ensure_write_buffer(out_len)
+        assert self._write_j_buf is not None
+        _copy_python_to_java(self._write_j_buf, data)
+        written = int(self._track.write(self._write_j_buf, 0, out_len))
         if written < 0:
             self._write_failures += 1
             if self._write_failures <= 5 or self._write_failures % 200 == 0:
@@ -331,6 +364,8 @@ class AndroidSpeakerOutput:
             except Exception:
                 pass
             self._track = None
+        self._write_j_buf = None
+        self._write_j_buf_size = 0
         get_android_router().shutdown()
 
     def set_device(self, device_key: str | None) -> None:

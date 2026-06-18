@@ -200,6 +200,13 @@ class AndroidAudioRouter:
                 return
             try:
                 self._stop_sco(am)
+                try:
+                    autoclass = _jni()
+                    Version = autoclass("android.os.Build$VERSION")
+                    if int(Version.SDK_INT) >= 31:
+                        am.clearCommunicationDevice()
+                except Exception:
+                    logger.debug("clearCommunicationDevice failed", exc_info=True)
                 am.setSpeakerphoneOn(False)
                 AudioManager = _jni()("android.media.AudioManager")
                 am.setMode(AudioManager.MODE_NORMAL)
