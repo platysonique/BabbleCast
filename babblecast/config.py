@@ -28,7 +28,7 @@ class UserSettings:
     noise_suppression: float = 0.5
     input_volume: float = 1.0
     output_volume: float = 1.0
-    ptt_key: str = "space"
+    ptt_key: str = "alt+."
     last_server_host: str = ""
     last_server_port: int = 9513
     last_server_underlay: str = ""
@@ -41,6 +41,9 @@ class UserSettings:
     window_geometry: list[int] | None = None
     ui_panel_expanded: bool = False
     ui_self_audio_expanded: bool = False
+    skip_clear_chat_confirm: bool = False
+    skip_tap_note_save_confirm: bool = False
+    skip_tap_delete_confirm: bool = False
     skip_disconnect_confirm: bool = False
     android_audio_route: str = "speaker"
     host_password: str = ""
@@ -61,7 +64,10 @@ class UserSettings:
                 noise_suppression=float(raw.get("noise_suppression", 0.5)),
                 input_volume=float(raw.get("input_volume", 1.0)),
                 output_volume=float(raw.get("output_volume", 1.0)),
-                ptt_key=str(raw.get("ptt_key", "space")),
+                ptt_key=str(raw.get("ptt_key", "alt+.")),
+                skip_clear_chat_confirm=bool(raw.get("skip_clear_chat_confirm", False)),
+                skip_tap_note_save_confirm=bool(raw.get("skip_tap_note_save_confirm", False)),
+                skip_tap_delete_confirm=bool(raw.get("skip_tap_delete_confirm", False)),
                 last_server_host=str(raw.get("last_server_host", "")),
                 last_server_port=int(raw.get("last_server_port", 9513)),
                 last_server_underlay=str(raw.get("last_server_underlay", "")),

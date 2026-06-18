@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -25,6 +26,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from babblecast.client.qt.confirm_dialog import ConfirmCheckboxDialog
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
 from babblecast.client.bridge import BridgeManager
@@ -41,8 +44,17 @@ from babblecast.client.qt.participant_widget import ParticipantWidget
 from babblecast.client.qt.server_link_widget import ServerLinkWidget
 from babblecast.client.qt.styles import STYLESHEET
 from babblecast.client.qt.tap_chat_dialog import TapChatDialog
+from babblecast.client.qt.tap_notes_bar import TapNotesBar
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import DEFAULT_WS_PORT, composite_participant_key
+from babblecast.constants import (
+    DEFAULT_WS_PORT,
+    UI_ACTIVE_GREEN,
+    UI_MUTE_ORANGE,
+    UI_MUTED_RED,
+    UI_SUNFLOWER,
+    composite_participant_key,
+)
+from babblecast.taps import SavedTap, get_tap_store
 from babblecast.network import is_local_host, is_valid_connect_target
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
 from babblecast.client.room_controller import (
@@ -55,7 +67,6 @@ from babblecast.client.room_controller import (
 from babblecast.network import is_local_host
 from babblecast.protocol import is_name_taken_error, is_password_error
 from babblecast.server.embedded import EmbeddedServer
-from babblecast.taps import get_tap_store
 
 
 class _UiSignals(QObject):
@@ -233,26 +244,42 @@ class MainWindow(QMainWindow):
 
         chat_group = QGroupBox("Text chat (active server)")
         chat_layout = QVBoxLayout(chat_group)
+        chat_toolbar = QHBoxLayout()
+        chat_toolbar.addStretch()
+        self._clear_chat_btn = QPushButton("Clear Chat")
+        self._clear_chat_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {UI_MUTED_RED}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
+        )
+        self._clear_chat_btn.clicked.connect(self._clear_chat)
+        self._add_tap_note_btn = QPushButton("+ Tap Note")
+        self._add_tap_note_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {UI_SUNFLOWER}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
+        )
+        self._add_tap_note_btn.clicked.connect(lambda: self._prompt_add_tap_note())
+        chat_toolbar.addWidget(self._clear_chat_btn)
+        chat_toolbar.addWidget(self._add_tap_note_btn)
+        chat_toolbar.addStretch()
+        chat_layout.addLayout(chat_toolbar)
         self._chat_log = QTextEdit()
         self._chat_log.setReadOnly(True)
         chat_layout.addWidget(self._chat_log)
+        self._tap_notes = TapNotesBar(
+            on_add=lambda: self._prompt_add_tap_note(),
+            on_delete=self._delete_tap_note,
+            on_open=self._open_tap_note_from_list,
+        )
+        chat_layout.addWidget(self._tap_notes)
         chat_input_row = QHBoxLayout()
-        self._mute_btn = QPushButton("🎤")
+        self._mute_btn = QPushButton("Mic")
         self._mute_btn.setCheckable(True)
-        self._mute_btn.setToolTip("Mute your mic on all servers")
-        self._mute_btn.setFixedWidth(44)
+        self._mute_btn.setToolTip("Mute mic on all servers (orange = muted). Hold Alt+. to talk while muted.")
+        self._mute_btn.setFixedWidth(72)
         self._mute_btn.toggled.connect(self._toggle_mute)
-        self._ptt_btn = QPushButton("PTT")
-        self._ptt_btn.setCheckable(True)
-        self._ptt_btn.setToolTip("Push-to-talk (hold Space when mic muted)")
-        self._ptt_btn.setFixedWidth(52)
-        self._ptt_btn.pressed.connect(lambda: self._set_ptt(True))
-        self._ptt_btn.released.connect(lambda: self._set_ptt(False))
+        self._apply_global_mute_style(False)
         self._chat_input = QLineEdit()
         self._chat_input.setPlaceholderText("Type a message, then hit ↵")
         self._chat_input.returnPressed.connect(self._send_chat)
         chat_input_row.addWidget(self._mute_btn)
-        chat_input_row.addWidget(self._ptt_btn)
         chat_input_row.addWidget(self._chat_input, stretch=1)
         chat_layout.addLayout(chat_input_row)
         center.addWidget(chat_group, 1)
@@ -271,6 +298,8 @@ class MainWindow(QMainWindow):
             on_peer_tap=self._send_tap,
             on_peer_tap_chat=self._open_tap_for_peer,
             on_reopen_tap=self._reinsert_saved_tap,
+            on_add_tap_note=self._add_tap_note_for_peer,
+            on_delete_tap_note=self._delete_tap_note,
             panel_expanded=self._settings.ui_panel_expanded,
             self_audio_expanded=self._settings.ui_self_audio_expanded,
         )
@@ -288,6 +317,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._drawer, 0)
         if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
             self._bridge.ensure_input_monitoring()
+        self._tap_notes.refresh()
 
     def _load_devices(self) -> None:
         self._input_devices = list_input_devices()
@@ -530,6 +560,10 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Connected — {label}")
         if link_id == self._active_link_id:
             self._reload_chat_log(link_id)
+        w = self._link_widgets.get(link_id)
+        if w and link:
+            w.set_listen_muted(link.listen_muted)
+            w.set_mic_muted(link.mic_muted)
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
         self._remove_link_widget(link_id)
@@ -659,13 +693,13 @@ class MainWindow(QMainWindow):
         self._bridge.set_listen_muted(link_id, muted)
         w = self._link_widgets.get(link_id)
         if w:
-            w._listen_btn.setText("🔇" if muted else "🔊")
+            w.set_listen_muted(muted)
 
     def _on_mic_mute(self, link_id: str, muted: bool) -> None:
         self._bridge.set_mic_muted(link_id, muted)
         w = self._link_widgets.get(link_id)
         if w:
-            w._mic_btn.setText("🎤✕" if muted else "🎤")
+            w.set_mic_muted(muted)
 
     def _disconnect_link(self, link_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -745,6 +779,7 @@ class MainWindow(QMainWindow):
         link = self._bridge.get_link(link_id)
         server_label = w.server_label
         tapped = bool(link and client_id in link.pending_taps)
+        tap_active = (link_id, client_id) in self._tap_ids
         local_muted = self._settings.per_user_muted.get(composite, False)
         local_vol = self._settings.per_user_volumes.get(composite, float(p.get("volume", 1.0)))
         tech_lines = [
@@ -768,6 +803,7 @@ class MainWindow(QMainWindow):
             muted=local_muted,
             volume=local_vol,
             tapped=tapped,
+            tap_active=tap_active,
             is_self=w.is_self,
             tech_lines=tech_lines,
         )
@@ -918,16 +954,32 @@ class MainWindow(QMainWindow):
         self._bridge.send_chat(self._active_link_id, text)
         self._chat_input.clear()
 
+    def _apply_global_mute_style(self, muted: bool) -> None:
+        if muted:
+            self._mute_btn.setText("Muted")
+            self._mute_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {UI_MUTE_ORANGE}; color: #1a1b26; font-weight: 700; border: none; border-radius: 6px; }}"
+            )
+        else:
+            self._mute_btn.setText("Mic")
+            self._mute_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {UI_ACTIVE_GREEN}; color: #1a1b26; font-weight: 700; border: none; border-radius: 6px; }}"
+            )
+
     def _toggle_mute(self, checked: bool) -> None:
         self._self_muted = checked
-        self._mute_btn.setText("🎤✕" if checked else "🎤")
+        self._apply_global_mute_style(checked)
         self._bridge.set_global_muted(checked)
 
     def _set_ptt(self, active: bool) -> None:
         self._ptt_held = active
-        self._ptt_btn.setObjectName("pttActive" if active else "")
-        self._ptt_btn.setStyleSheet("")
         self._bridge.set_global_ptt(active)
+        if active and self._self_muted:
+            self._mute_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {UI_ACTIVE_GREEN}; color: #1a1b26; font-weight: 700; border: none; border-radius: 6px; }}"
+            )
+        elif self._self_muted:
+            self._apply_global_mute_style(True)
 
     def _send_tap(self, link_id: str, target_id: str) -> None:
         self._bridge.send_tap(link_id, target_id)
@@ -943,6 +995,9 @@ class MainWindow(QMainWindow):
         if tap_id and peer_id:
             self._tap_ids[(link_id, peer_id)] = tap_id
             self._peer_names[(link_id, peer_id)] = peer_name
+            composite = composite_participant_key(link_id, peer_id)
+            if self._drawer.is_peer_open(composite):
+                self._drawer.set_tap_chat_visible(True)
         if not data.get("self_sent"):
             self._rebuild_participants()
             link = self._bridge.get_link(link_id)
@@ -969,9 +1024,13 @@ class MainWindow(QMainWindow):
             link.label if link else link_id,
             parent=self,
         )
-        dlg.finished.connect(lambda _r, k=key: self._tap_dialogs.pop(k, None))
+        dlg.finished.connect(lambda _r, k=key: self._on_tap_dialog_closed(k))
         self._tap_dialogs[key] = dlg
         dlg.show()
+
+    def _on_tap_dialog_closed(self, key: tuple[str, str]) -> None:
+        self._tap_dialogs.pop(key, None)
+        self._refresh_tap_notes_ui()
 
     def _on_tap_chat(self, link_id: str, data: dict) -> None:
         tap_id = str(data.get("tap_id", ""))
@@ -1003,13 +1062,115 @@ class MainWindow(QMainWindow):
         if n:
             self._status.setText(f"{n} server(s) connected — mixed audio active")
 
+    def _clear_chat(self) -> None:
+        if not self._active_link_id:
+            QMessageBox.information(self, "BabbleCast", "Connect to a server first.")
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        if not session or not session.room_id:
+            QMessageBox.information(self, "BabbleCast", "Join a room before clearing chat.")
+            return
+        if not self._settings.skip_clear_chat_confirm:
+            dlg = ConfirmCheckboxDialog(
+                "Clear Chat",
+                "Clear all messages in this room's chat history?",
+                confirm_label="Clear",
+                confirm_style="color: #f7768e; font-weight: 600;",
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dlg.skip_future:
+                self._settings.skip_clear_chat_confirm = True
+                save_settings(self._settings)
+        link = self._bridge.get_link(self._active_link_id)
+        if link:
+            purge_room_chat(link.host, link.port, session.room_id)
+        self._chat_log.clear()
+
+    def _prompt_add_tap_note(
+        self,
+        *,
+        link_id: str | None = None,
+        peer_id: str | None = None,
+        peer_name: str | None = None,
+        default_reminder: str = "",
+    ) -> None:
+        lid = link_id or self._active_link_id
+        link = self._bridge.get_link(lid) if lid else None
+        if peer_id is None and self._drawer.has_open_peer():
+            peer_id = self._drawer.peer_client_id
+            lid = lid or self._drawer.peer_link_id
+            peer_name = peer_name or self._peer_names.get((lid or "", peer_id), "Note")
+        reminder, ok = QInputDialog.getText(
+            self,
+            "+ Tap Note",
+            "Tap note reminder:",
+            text=default_reminder or (f"Follow up with {peer_name}" if peer_name else ""),
+        )
+        if not ok or not reminder.strip():
+            return
+        get_tap_store().add(
+            SavedTap.create(
+                peer_id=peer_id or "",
+                peer_name=peer_name or "Note",
+                server_label=link.label if link else "",
+                reminder=reminder.strip(),
+            )
+        )
+        self._refresh_tap_notes_ui()
+
+    def _add_tap_note_for_peer(self, link_id: str, peer_id: str) -> None:
+        peer_name = self._peer_names.get((link_id, peer_id), peer_id)
+        self._prompt_add_tap_note(
+            link_id=link_id,
+            peer_id=peer_id,
+            peer_name=peer_name,
+            default_reminder=f"Follow up with {peer_name}",
+        )
+
+    def _delete_tap_note(self, save_id: str) -> None:
+        if not self._settings.skip_tap_delete_confirm:
+            dlg = ConfirmCheckboxDialog(
+                "Delete tap note",
+                "Delete this tap note permanently?",
+                confirm_label="Delete",
+                confirm_style="color: #f7768e; font-weight: 600;",
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dlg.skip_future:
+                self._settings.skip_tap_delete_confirm = True
+                save_settings(self._settings)
+        get_tap_store().delete(save_id)
+        self._refresh_tap_notes_ui()
+
+    def _refresh_tap_notes_ui(self) -> None:
+        self._tap_notes.refresh()
+        self._drawer.refresh_tap_notes()
+
+    def _open_tap_note_from_list(self, save_id: str) -> None:
+        for tap in get_tap_store().items:
+            if tap.save_id == save_id:
+                for lid in self._link_widgets:
+                    self._reinsert_saved_tap(lid, save_id)
+                break
+
+    def _is_ptt_key(self, event: QKeyEvent) -> bool:
+        return (
+            event.key() == Qt.Key.Key_Period
+            and bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            and not event.isAutoRepeat()
+        )
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self._self_muted:
+        if self._is_ptt_key(event) and self._self_muted:
             self._set_ptt(True)
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat() and self._self_muted:
+        if self._is_ptt_key(event) and self._self_muted:
             self._set_ptt(False)
         super().keyReleaseEvent(event)
 

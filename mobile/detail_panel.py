@@ -12,7 +12,7 @@ from kivymd.uix.slider import MDSlider
 from kivymd.uix.textfield import MDTextField
 
 from mobile.collapsible import CollapsibleSection
-from mobile.theme import ACCENT, MUTED, TEXT
+from mobile.theme import ACCENT, MUTED, SUNFLOWER, TEXT
 from mobile.vertical_meter import METER_HEIGHT, VerticalMeter
 
 
@@ -256,7 +256,19 @@ class SideDetailPanel(MDBoxLayout):
         self._tech_section.body.add_widget(self._tech_label)
         self._peer_box.add_widget(self._tech_section)
 
-        self._taps_section = CollapsibleSection("Taps", expanded=True)
+        self._taps_section = CollapsibleSection("Tap Notes", expanded=True)
+        taps_header = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+        taps_header.add_widget(MDBoxLayout(size_hint_x=1))
+        taps_add = MDRaisedButton(
+            text="+",
+            size_hint_x=None,
+            width=dp(36),
+            md_bg_color=SUNFLOWER,
+            text_color=(0.1, 0.11, 0.15, 1),
+            on_release=lambda *_: self._add_tap_note(),
+        )
+        taps_header.add_widget(taps_add)
+        self._taps_section.body.add_widget(taps_header)
         self._taps_box = MDBoxLayout(orientation="vertical", spacing=dp(2), size_hint_y=None)
         self._taps_box.bind(minimum_height=self._taps_box.setter("height"))
         self._taps_section.body.add_widget(self._taps_box)
@@ -373,7 +385,16 @@ class SideDetailPanel(MDBoxLayout):
     def is_open_for(self, composite: str) -> bool:
         return self._peer_key == composite and self._peer_open
 
-    def toggle_peer(self, composite: str, participant: dict, *, link_id: str, server: str, is_self: bool) -> None:
+    def toggle_peer(
+        self,
+        composite: str,
+        participant: dict,
+        *,
+        link_id: str,
+        server: str,
+        is_self: bool,
+        tap_active: bool = False,
+    ) -> None:
         if self.is_open_for(composite):
             self.close_peer()
             return
@@ -394,7 +415,9 @@ class SideDetailPanel(MDBoxLayout):
         self._peer_meter.set_level(float(participant.get("voice_level", 0)))
         self._tap_btn.disabled = is_self
         self._tap_btn.opacity = 0.35 if is_self else 1
-        self._tap_chat_btn.disabled = is_self
+        show_tap_chat = tap_active and not is_self
+        self._tap_chat_btn.disabled = not show_tap_chat
+        self._tap_chat_btn.opacity = 1 if show_tap_chat else 0.35
         self._tech_label.text = (
             f"client_id: {self._peer_client_id}\nlink: {link_id}\nserver: {server}\n"
             f"composite: {composite}\nvoice: {float(participant.get('voice_level', 0)):.3f}\n"
@@ -454,6 +477,16 @@ class SideDetailPanel(MDBoxLayout):
         if self._peer_key:
             self._controller.set_peer_volume(self._peer_key, value / 100.0)
 
+    def set_tap_chat_visible(self, visible: bool) -> None:
+        if not self._peer_open or not self._peer_client_id:
+            return
+        self._tap_chat_btn.disabled = not visible
+        self._tap_chat_btn.opacity = 1 if visible else 0.35
+
+    def _add_tap_note(self) -> None:
+        if self._peer_link_id and self._peer_client_id:
+            self._controller.add_tap_note_for_peer(self._peer_link_id, self._peer_client_id)
+
     def _tap(self) -> None:
         if self._peer_link_id and self._peer_client_id:
             self._controller.send_peer_tap(self._peer_link_id, self._peer_client_id)
@@ -463,21 +496,35 @@ class SideDetailPanel(MDBoxLayout):
             self._controller.open_tap_for_peer(self._peer_link_id, self._peer_client_id)
 
     def _refresh_taps(self) -> None:
+        from kivymd.uix.button import MDFlatButton, MDIconButton
+
         from babblecast.taps import get_tap_store
 
         self._taps_box.clear_widgets()
         saved = get_tap_store().all_for_peer(self._peer_client_id)
         if not saved:
             self._taps_box.add_widget(
-                MDLabel(text="(none)", theme_text_color="Custom", text_color=MUTED, font_style="Caption")
+                MDLabel(text="(no tap notes)", theme_text_color="Custom", text_color=MUTED, font_style="Caption")
             )
             return
         for tap in saved:
             mark = "✓" if tap.done else "○"
-            btn = MDFlatButton(
-                text=f"{mark} {tap.reminder[:32]}",
-                on_release=lambda *_t, sid=tap.save_id: self._controller.reinsert_saved_tap(
-                    self._peer_link_id, sid
-                ),
+            row = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+            row.add_widget(
+                MDFlatButton(
+                    text=f"{mark} {tap.reminder[:32]}",
+                    on_release=lambda *_t, sid=tap.save_id: self._controller.reinsert_saved_tap(
+                        self._peer_link_id, sid
+                    ),
+                )
             )
-            self._taps_box.add_widget(btn)
+            row.add_widget(MDBoxLayout(size_hint_x=1))
+            row.add_widget(
+                MDIconButton(
+                    icon="close",
+                    theme_text_color="Custom",
+                    text_color=(0.97, 0.46, 0.56, 1),
+                    on_release=lambda *_t, sid=tap.save_id: self._controller.delete_tap_note(sid),
+                )
+            )
+            self._taps_box.add_widget(row)

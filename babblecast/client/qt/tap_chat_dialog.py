@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
 )
 
 from babblecast.client.bridge import BridgeManager
+from babblecast.client.qt.confirm_dialog import ConfirmCheckboxDialog
+from babblecast.config import get_settings, save_settings
 from babblecast.taps import SavedTap, get_tap_store
 
 
@@ -63,7 +65,7 @@ class TapChatDialog(QDialog):
         row.addWidget(send_btn)
         layout.addLayout(row)
 
-        save_btn = QPushButton("Save Tap (reminder)")
+        save_btn = QPushButton("+ Tap Note")
         save_btn.clicked.connect(self._save_tap_now)
         layout.addWidget(save_btn)
 
@@ -91,8 +93,8 @@ class TapChatDialog(QDialog):
     def _save_tap_now(self) -> None:
         reminder, ok = QInputDialog.getText(
             self,
-            "Save Tap",
-            "Reminder note for this tap:",
+            "+ Tap Note",
+            "Tap note reminder:",
             text=f"Follow up with {self._peer_name}",
         )
         if ok and reminder.strip():
@@ -105,36 +107,41 @@ class TapChatDialog(QDialog):
                     messages=list(self._messages),
                 )
             )
-            QMessageBox.information(self, "Tap saved", "Reminder saved to your tap list.")
+            QMessageBox.information(self, "Tap note saved", "Saved to Tap Notes.")
             self._saved_on_close = True
 
     def closeEvent(self, event) -> None:
         if not self._saved_on_close and self._messages:
-            reply = QMessageBox.question(
-                self,
-                "Save tap?",
-                "Save this tap as a reminder before closing?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                reminder, ok = QInputDialog.getText(
-                    self,
-                    "Save Tap",
-                    "Describe this tap reminder:",
-                    text=f"Follow up with {self._peer_name}",
+            settings = get_settings()
+            if not settings.skip_tap_note_save_confirm:
+                dlg = ConfirmCheckboxDialog(
+                    "+ Tap Note",
+                    "Save this conversation as a tap note before closing?",
+                    confirm_label="Save tap note",
+                    cancel_label="Close without saving",
+                    parent=self,
                 )
-                if ok and reminder.strip():
-                    get_tap_store().add(
-                        SavedTap.create(
-                            peer_id=self._peer_id,
-                            peer_name=self._peer_name,
-                            server_label=self._server_label,
-                            reminder=reminder.strip(),
-                            messages=list(self._messages),
-                        )
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    if dlg.skip_future:
+                        settings.skip_tap_note_save_confirm = True
+                        save_settings(settings)
+                    reminder, ok = QInputDialog.getText(
+                        self,
+                        "+ Tap Note",
+                        "Tap note reminder:",
+                        text=f"Follow up with {self._peer_name}",
                     )
-                    self._saved_on_close = True
+                    if ok and reminder.strip():
+                        get_tap_store().add(
+                            SavedTap.create(
+                                peer_id=self._peer_id,
+                                peer_name=self._peer_name,
+                                server_label=self._server_label,
+                                reminder=reminder.strip(),
+                                messages=list(self._messages),
+                            )
+                        )
+                        self._saved_on_close = True
         self._bridge.end_tap(self._link_id, self._tap_id)
         self._log.clear()
         self._messages.clear()

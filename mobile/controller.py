@@ -383,6 +383,7 @@ class BabbleController:
             panel.sync_from_settings()
         self._refresh_admin_room_password()
         self._sync_input_monitoring()
+        self.refresh_tap_notes_ui()
 
     def _on_local_mic_level(self, level: float) -> None:
         if not self._alive():
@@ -409,12 +410,14 @@ class BabbleController:
         live = self.app.screen("live")
         if not getattr(live, "detail_panel", None):
             return
+        tap_active = (link_id, cid) in self._tap_ids
         live.detail_panel.toggle_peer(
             composite,
             participant,
             link_id=link_id,
             server=link.label if link else link_id,
             is_self=(cid == my_id),
+            tap_active=tap_active,
         )
 
     def open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
@@ -729,11 +732,207 @@ class BabbleController:
         live = self.app.screen("live")
         live.is_muted = self.is_muted
 
-    def toggle_ptt(self) -> None:
-        self.ptt_active = not self.ptt_active
-        self._bridge.set_global_ptt(self.ptt_active)
+    def set_ptt(self, active: bool) -> None:
+        self.ptt_active = active
+        self._bridge.set_global_ptt(active)
         live = self.app.screen("live")
         live.ptt_active = self.ptt_active
+
+    def clear_chat(self) -> None:
+        if not self._active_link_id:
+            self.set_status("Connect to a server first")
+            return
+        session = self._bridge.get_session(self._active_link_id)
+        if not session or not session.room_id:
+            self.set_status("Join a room before clearing chat")
+            return
+
+        def do_clear(skip_future: bool) -> None:
+            if skip_future:
+                self._settings.skip_clear_chat_confirm = True
+                save_settings(self._settings)
+            link = self._bridge.get_link(self._active_link_id)
+            if link:
+                purge_room_chat(link.host, link.port, session.room_id)
+            self.chat_text = ""
+            live = self.app.screen("live")
+            live.chat_text = ""
+
+        if self._settings.skip_clear_chat_confirm:
+            do_clear(False)
+            return
+        from mobile.credentials_dialog import prompt_confirm_checkbox
+
+        prompt_confirm_checkbox(
+            "Clear Chat",
+            "Clear all messages in this room's chat history?",
+            "Clear",
+            do_clear,
+            confirm_color=(0.97, 0.46, 0.56, 1),
+        )
+
+    def refresh_tap_notes_ui(self) -> None:
+        if not self._alive():
+            return
+        from babblecast.taps import get_tap_store
+
+        live = self.app.screen("live")
+        taps = sorted(get_tap_store().items, key=lambda t: t.created_at, reverse=True)
+        live.refresh_tap_notes(taps)
+        panel = getattr(live, "detail_panel", None)
+        if panel and panel._peer_open and panel._peer_client_id:
+            panel._refresh_taps()
+
+    def _save_tap_conversation(
+        self,
+        link_id: str,
+        peer_id: str,
+        peer_name: str,
+        messages: list[dict],
+        *,
+        default_reminder: str = "",
+    ) -> None:
+        from kivy.metrics import dp
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+        from kivymd.uix.dialog import MDDialog
+        from kivymd.uix.textfield import MDTextField
+
+        link = self._bridge.get_link(link_id)
+        field = MDTextField(
+            hint_text="Tap note reminder",
+            text=default_reminder or f"Follow up with {peer_name}",
+            size_hint_y=None,
+            height=dp(48),
+        )
+        holder: list = []
+
+        def save(*_args) -> None:
+            reminder = field.text.strip()
+            if not reminder:
+                return
+            holder[0].dismiss()
+            get_tap_store().add(
+                SavedTap.create(
+                    peer_id=peer_id,
+                    peer_name=peer_name,
+                    server_label=link.label if link else link_id,
+                    reminder=reminder,
+                    messages=messages,
+                )
+            )
+            self.refresh_tap_notes_ui()
+
+        dialog = MDDialog(
+            title="+ Tap Note",
+            type="custom",
+            content_cls=field,
+            buttons=[
+                MDFlatButton(text="Cancel", on_release=lambda *_: holder[0].dismiss()),
+                MDRaisedButton(text="Save", on_release=save),
+            ],
+        )
+        holder.append(dialog)
+        dialog.open()
+
+    def prompt_add_tap_note(
+        self,
+        *,
+        link_id: str | None = None,
+        peer_id: str | None = None,
+        peer_name: str | None = None,
+        default_reminder: str = "",
+    ) -> None:
+        from kivy.metrics import dp
+        from kivymd.uix.textfield import MDTextField
+
+        lid = link_id or self._active_link_id
+        link = self._bridge.get_link(lid) if lid else None
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if peer_id is None and panel and panel._peer_open and panel._peer_client_id:
+            peer_id = panel._peer_client_id
+            lid = panel._peer_link_id or lid
+            p = self._participant_by_composite.get(
+                f"{lid}:{peer_id}" if lid else "", {}
+            )
+            peer_name = peer_name or str(p.get("name", "Note"))
+
+        field = MDTextField(
+            hint_text="Tap note reminder",
+            text=default_reminder or (f"Follow up with {peer_name}" if peer_name else ""),
+            size_hint_y=None,
+            height=dp(48),
+        )
+        holder: list = []
+
+        def save(*_args) -> None:
+            reminder = field.text.strip()
+            if not reminder:
+                return
+            holder[0].dismiss()
+            get_tap_store().add(
+                SavedTap.create(
+                    peer_id=peer_id or "",
+                    peer_name=peer_name or "Note",
+                    server_label=link.label if link else "",
+                    reminder=reminder,
+                    messages=[],
+                )
+            )
+            self.refresh_tap_notes_ui()
+
+        from kivymd.uix.dialog import MDDialog
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+
+        dialog = MDDialog(
+            title="+ Tap Note",
+            type="custom",
+            content_cls=field,
+            buttons=[
+                MDFlatButton(text="Cancel", on_release=lambda *_: holder[0].dismiss()),
+                MDRaisedButton(text="Save", on_release=save),
+            ],
+        )
+        holder.append(dialog)
+        dialog.open()
+
+    def add_tap_note_for_peer(self, link_id: str, peer_id: str) -> None:
+        from babblecast.constants import composite_participant_key
+
+        composite = composite_participant_key(link_id, peer_id)
+        p = self._participant_by_composite.get(composite, {})
+        peer_name = str(p.get("name", peer_id))
+        self.prompt_add_tap_note(
+            link_id=link_id,
+            peer_id=peer_id,
+            peer_name=peer_name,
+            default_reminder=f"Follow up with {peer_name}",
+        )
+
+    def delete_tap_note(self, save_id: str) -> None:
+        def do_delete(skip_future: bool) -> None:
+            if skip_future:
+                self._settings.skip_tap_delete_confirm = True
+                save_settings(self._settings)
+            get_tap_store().delete(save_id)
+            self.refresh_tap_notes_ui()
+
+        if self._settings.skip_tap_delete_confirm:
+            do_delete(False)
+            return
+        from mobile.credentials_dialog import prompt_confirm_checkbox
+
+        prompt_confirm_checkbox(
+            "Delete tap note",
+            "Delete this tap note permanently?",
+            "Delete",
+            do_delete,
+            confirm_color=(0.97, 0.46, 0.56, 1),
+        )
+
+    def open_tap_note(self, save_id: str) -> None:
+        if self._active_link_id:
+            self.reinsert_saved_tap(self._active_link_id, save_id)
 
     def send_chat(self, text: str) -> None:
         if not self._active_link_id:
@@ -899,6 +1098,10 @@ class BabbleController:
         peer_id = target_id if data.get("self_sent") else from_id
         if tap_id and peer_id:
             self._tap_ids[(link_id, peer_id)] = tap_id
+            live = self.app.screen("live")
+            panel = getattr(live, "detail_panel", None)
+            if panel and panel._peer_open and panel._peer_client_id == peer_id:
+                panel.set_tap_chat_visible(True)
         if not data.get("self_sent"):
             live = self.app.screen("live")
             live.refresh_people(self._presence, self._bridge, self._tap_ids, self._active_link_id)
@@ -938,32 +1141,77 @@ class BabbleController:
                 self._bridge.send_tap_chat(link_id, tap_id, text)
                 tap_input.text = ""
 
-        def save_tap(*_args) -> None:
-            reminder = f"Follow up with {peer_name}"
-            link = self._bridge.get_link(link_id)
-            get_tap_store().add(
-                SavedTap.create(
-                    peer_id=peer_id,
-                    peer_name=peer_name,
-                    server_label=link.label if link else link_id,
-                    reminder=reminder,
-                    messages=list(self._tap_messages),
-                )
-            )
-            self.set_status("Tap saved")
-
-        def close_tap(*_args) -> None:
+        def _finish_simple() -> None:
             if self._tap_dialog:
                 self._tap_dialog.dismiss()
             self._bridge.end_tap(link_id, tap_id)
             self._tap_messages.clear()
+            self._tap_dialog = None
+            self.refresh_tap_notes_ui()
+
+        def close_tap(*_args) -> None:
+            if not self._tap_messages or getattr(self, "_tap_saved", False):
+                _finish_simple()
+                return
+            if self._settings.skip_tap_note_save_confirm:
+                _finish_simple()
+                return
+
+            from kivymd.uix.selectioncontrol import MDCheckbox
+
+            skip_cb = MDCheckbox(size_hint=(None, None), size=(dp(32), dp(32)))
+            row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
+            row.add_widget(skip_cb)
+            row.add_widget(MDLabel(text="Do not ask again", size_hint_x=1))
+            body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+            body.add_widget(
+                MDLabel(text="Save this conversation as a tap note before closing?", size_hint_y=None)
+            )
+            body.add_widget(row)
+            holder: list = []
+
+            def dismiss() -> None:
+                holder[0].dismiss()
+
+            def confirm_save(*_a) -> None:
+                if skip_cb.active:
+                    self._settings.skip_tap_note_save_confirm = True
+                    save_settings(self._settings)
+                dismiss()
+                self._save_tap_conversation(
+                    link_id, peer_id, peer_name, list(self._tap_messages)
+                )
+                self._tap_saved = True
+                _finish_simple()
+
+            dialog = MDDialog(
+                title="+ Tap Note",
+                type="custom",
+                content_cls=body,
+                buttons=[
+                    MDFlatButton(
+                        text="Close without saving",
+                        on_release=lambda *_: (dismiss(), _finish_simple()),
+                    ),
+                    MDRaisedButton(text="Save tap note", on_release=confirm_save),
+                ],
+            )
+            holder.append(dialog)
+            dialog.open()
+
+        def save_tap(*_args) -> None:
+            self._save_tap_conversation(link_id, peer_id, peer_name, list(self._tap_messages))
+            self._tap_saved = True
+            self.set_status("Tap note saved")
+
+        self._tap_saved = False
 
         self._tap_dialog = MDDialog(
             title=f"Tap — {peer_name}",
             type="custom",
             content_cls=content,
             buttons=[
-                MDRaisedButton(text="Save Tap", on_release=save_tap),
+                MDRaisedButton(text="+ Tap Note", on_release=save_tap),
                 MDRaisedButton(text="Send", on_release=send_msg),
                 MDFlatButton(text="Close", on_release=close_tap),
             ],

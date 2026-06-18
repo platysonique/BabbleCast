@@ -6,10 +6,9 @@ from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -47,6 +46,8 @@ class DetailDrawer(QWidget):
         on_peer_tap,
         on_peer_tap_chat,
         on_reopen_tap,
+        on_add_tap_note,
+        on_delete_tap_note,
         panel_expanded: bool = False,
         self_audio_expanded: bool = False,
         parent=None,
@@ -64,10 +65,13 @@ class DetailDrawer(QWidget):
         self._on_peer_tap = on_peer_tap
         self._on_peer_tap_chat = on_peer_tap_chat
         self._on_reopen_tap = on_reopen_tap
+        self._on_add_tap_note = on_add_tap_note
+        self._on_delete_tap_note = on_delete_tap_note
 
         self._open_composite: str | None = None
         self._peer_client_id = ""
         self._peer_link_id = ""
+        self._peer_is_self = False
         self._panel_width = 292
         self._panel_expanded = panel_expanded
 
@@ -222,11 +226,21 @@ class DetailDrawer(QWidget):
         tech_layout.addWidget(self._tech_label)
         body_layout.addWidget(self._tech_section)
 
-        self._taps_section = CollapsibleSection("Taps", expanded=True)
+        self._taps_section = CollapsibleSection("Tap Notes", expanded=True)
         taps_layout = self._taps_section.body_layout()
-        self._tap_list = QListWidget()
-        self._tap_list.itemDoubleClicked.connect(self._tap_list_activated)
-        taps_layout.addWidget(self._tap_list)
+        taps_header = QHBoxLayout()
+        taps_add = QPushButton("+")
+        taps_add.setFixedSize(28, 28)
+        taps_add.setToolTip("Add tap note for this person")
+        taps_add.clicked.connect(self._add_peer_tap_note)
+        taps_header.addStretch()
+        taps_header.addWidget(taps_add)
+        taps_layout.addLayout(taps_header)
+        self._tap_list_host = QWidget()
+        self._tap_list_layout = QVBoxLayout(self._tap_list_host)
+        self._tap_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._tap_list_layout.setSpacing(2)
+        taps_layout.addWidget(self._tap_list_host)
         body_layout.addWidget(self._taps_section)
 
         body_layout.addStretch()
@@ -319,6 +333,7 @@ class DetailDrawer(QWidget):
         muted: bool,
         volume: float,
         tapped: bool,
+        tap_active: bool = False,
         is_self: bool,
         tech_lines: list[str],
     ) -> None:
@@ -336,6 +351,7 @@ class DetailDrawer(QWidget):
             muted=muted,
             volume=volume,
             tapped=tapped,
+            tap_active=tap_active,
             is_self=is_self,
             tech_lines=tech_lines,
         )
@@ -353,6 +369,7 @@ class DetailDrawer(QWidget):
         muted: bool,
         volume: float,
         tapped: bool,
+        tap_active: bool = False,
         is_self: bool,
         tech_lines: list[str],
     ) -> None:
@@ -360,6 +377,7 @@ class DetailDrawer(QWidget):
         self._open_composite = composite
         self._peer_link_id = link_id
         self._peer_client_id = client_id
+        self._peer_is_self = is_self
         suffix = " (you)" if is_self else ""
         self._peer_title.setText(f"{name}{suffix}")
         self._controls_section.set_title(f"{name} controls")
@@ -372,7 +390,7 @@ class DetailDrawer(QWidget):
         self._listen_mute_btn.setText("🔇" if muted else "🔊")
         self._listen_mute_btn.blockSignals(False)
         self._tap_btn.setVisible(not is_self)
-        self._tap_chat_btn.setVisible(not is_self and tapped)
+        self._tap_chat_btn.setVisible(not is_self and (tapped or tap_active))
         self._tech_label.setText("\n".join(tech_lines))
         self._refresh_tap_list(client_id)
         self._peer_block.setVisible(True)
@@ -403,18 +421,64 @@ class DetailDrawer(QWidget):
         self._anim.setEndValue(target)
         self._anim.start()
 
+    def has_open_peer(self) -> bool:
+        return self._peer_block.isVisible() and bool(self._peer_client_id)
+
+    @property
+    def peer_client_id(self) -> str:
+        return self._peer_client_id
+
+    @property
+    def peer_link_id(self) -> str:
+        return self._peer_link_id
+
+    def set_tap_chat_visible(self, visible: bool) -> None:
+        if not self._peer_block.isVisible() or self._peer_is_self:
+            return
+        self._tap_chat_btn.setVisible(visible)
+
+    def refresh_tap_notes(self) -> None:
+        if self._peer_client_id:
+            self._refresh_tap_list(self._peer_client_id)
+
     def _refresh_tap_list(self, client_id: str) -> None:
-        self._tap_list.clear()
+        while self._tap_list_layout.count():
+            item = self._tap_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         saved = get_tap_store().all_for_peer(client_id)
-        for tap in saved:
-            mark = "✓ " if tap.done else "○ "
-            item = QListWidgetItem(f"{mark}{tap.reminder[:48]}")
-            item.setData(Qt.ItemDataRole.UserRole, tap.save_id)
-            self._tap_list.addItem(item)
         if not saved:
-            item = QListWidgetItem("(no saved taps)")
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self._tap_list.addItem(item)
+            empty = QLabel("(no tap notes)")
+            empty.setStyleSheet("color: #565f89; font-size: 11px;")
+            self._tap_list_layout.addWidget(empty)
+            return
+        for tap in saved:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            mark = "✓ " if tap.done else "○ "
+            label = QLabel(f"{mark}{tap.reminder[:48]}")
+            label.setStyleSheet("color: #a9b1d6; font-size: 11px;")
+            label.setCursor(Qt.CursorShape.PointingHandCursor)
+            label.mousePressEvent = lambda _e, sid=tap.save_id: self._open_saved_tap(sid)  # type: ignore[method-assign]
+            delete_btn = QPushButton("✕")
+            delete_btn.setFixedSize(24, 24)
+            delete_btn.setStyleSheet(
+                "QPushButton { color: #f7768e; font-weight: 700; border: none; }"
+                "QPushButton:hover { color: #ff9eaa; }"
+            )
+            delete_btn.clicked.connect(lambda _c=False, sid=tap.save_id: self._on_delete_tap_note(sid))
+            row_layout.addWidget(label, stretch=1)
+            row_layout.addWidget(delete_btn)
+            self._tap_list_layout.addWidget(row)
+
+    def _open_saved_tap(self, save_id: str) -> None:
+        if self._peer_link_id:
+            self._on_reopen_tap(self._peer_link_id, save_id)
+
+    def _add_peer_tap_note(self) -> None:
+        if self._peer_link_id and self._peer_client_id:
+            self._on_add_tap_note(self._peer_link_id, self._peer_client_id)
 
     def _gate_changed(self, value: int) -> None:
         self._gate_label.setText(f"{value} dB")
@@ -474,7 +538,3 @@ class DetailDrawer(QWidget):
         if self._peer_link_id:
             self._on_peer_tap_chat(self._peer_link_id, self._peer_client_id)
 
-    def _tap_list_activated(self, item: QListWidgetItem) -> None:
-        save_id = item.data(Qt.ItemDataRole.UserRole)
-        if save_id and self._peer_link_id:
-            self._on_reopen_tap(self._peer_link_id, str(save_id))

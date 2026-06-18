@@ -15,7 +15,7 @@ from kivymd.uix.screen import MDScreen
 from babblecast.client.bridge import BridgeManager
 from babblecast.config import get_settings
 from babblecast.constants import DEFAULT_WS_PORT
-from mobile.theme import ACCENT, BG, MUTED, SUCCESS, SURFACE, TEXT
+from mobile.theme import ACCENT, BG, DANGER, MUTED, MUTE_ORANGE, SUCCESS, SUNFLOWER, SURFACE, TEXT
 
 class ConnectScreen(MDScreen):
     display_name = StringProperty("")
@@ -285,17 +285,66 @@ class LiveScreen(MDScreen):
         chat_scroll = ScrollView(size_hint_y=1)
         chat_scroll.add_widget(self._chat_log)
 
+        chat_toolbar = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(40))
+        chat_toolbar.add_widget(MDBoxLayout(size_hint_x=1))
+        self._clear_chat_btn = MDRaisedButton(
+            text="Clear Chat",
+            size_hint_x=None,
+            width=dp(110),
+            md_bg_color=DANGER,
+            on_release=lambda *_: self._clear_chat(),
+        )
+        self._add_tap_note_btn = MDRaisedButton(
+            text="+ Tap Note",
+            size_hint_x=None,
+            width=dp(110),
+            md_bg_color=SUNFLOWER,
+            text_color=(0.1, 0.11, 0.15, 1),
+            on_release=lambda *_: self._add_tap_note(),
+        )
+        chat_toolbar.add_widget(self._clear_chat_btn)
+        chat_toolbar.add_widget(self._add_tap_note_btn)
+        chat_toolbar.add_widget(MDBoxLayout(size_hint_x=1))
+
+        self._tap_notes_box = MDBoxLayout(orientation="vertical", spacing=dp(2), size_hint_y=None)
+        self._tap_notes_box.bind(minimum_height=self._tap_notes_box.setter("height"))
+        tap_notes_scroll = ScrollView(size_hint_y=None, height=dp(88), do_scroll_x=False)
+        tap_notes_scroll.add_widget(self._tap_notes_box)
+        tap_notes_header = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+        tap_notes_header.add_widget(
+            MDLabel(text="Tap Notes", theme_text_color="Custom", text_color=TEXT, font_style="Body1", bold=True)
+        )
+        tap_notes_header.add_widget(MDBoxLayout(size_hint_x=1))
+        tap_notes_add = MDRaisedButton(
+            text="+",
+            size_hint_x=None,
+            width=dp(36),
+            md_bg_color=SUNFLOWER,
+            text_color=(0.1, 0.11, 0.15, 1),
+            on_release=lambda *_: self._add_tap_note(),
+        )
+        tap_notes_header.add_widget(tap_notes_add)
+
         chat_row = MDBoxLayout(spacing=dp(4), size_hint_y=None, height=dp(44))
-        self._mute_btn = MDIconButton(icon="microphone", on_release=lambda *_: self._toggle_mute())
-        self._ptt_btn = MDIconButton(icon="record-circle-outline", on_release=lambda *_: self._toggle_ptt())
-        self.bind(ptt_active=self._sync_ptt_icon)
+        self._mute_btn = MDRaisedButton(
+            text="Mic",
+            size_hint_x=None,
+            width=dp(72),
+            md_bg_color=SUCCESS,
+            on_release=lambda *_: None,
+        )
+        self._mute_btn.bind(on_touch_down=self._on_mute_touch_down, on_touch_up=self._on_mute_touch_up)
+        self._mute_hold_clock = None
+        self._ptt_from_hold = False
+        self._mute_touch_active = False
+        self.bind(is_muted=lambda _s, v: self._sync_mute_button())
+        self.bind(ptt_active=lambda _s, v: self._sync_mute_button())
         self._chat_input = MDTextField(
             hint_text="Type a message, then hit ↵",
             on_text_validate=lambda *_: self._send_chat(),
             font_size=dp(13),
         )
         chat_row.add_widget(self._mute_btn)
-        chat_row.add_widget(self._ptt_btn)
         chat_row.add_widget(self._chat_input)
 
         for w in (
@@ -305,7 +354,10 @@ class LiveScreen(MDScreen):
             room_create,
             self._rooms_box,
             people_scroll,
+            chat_toolbar,
             chat_scroll,
+            tap_notes_header,
+            tap_notes_scroll,
             chat_row,
         ):
             main.add_widget(w)
@@ -334,21 +386,101 @@ class LiveScreen(MDScreen):
             self.detail_panel._controller = app.controller
         app.controller.on_live_enter()
 
+    def _sync_mute_button(self, *_args) -> None:
+        if not hasattr(self, "_mute_btn"):
+            return
+        if self.ptt_active and self.is_muted:
+            self._mute_btn.text = "Talk"
+            self._mute_btn.md_bg_color = SUCCESS
+        elif self.is_muted:
+            self._mute_btn.text = "Muted"
+            self._mute_btn.md_bg_color = MUTE_ORANGE
+        else:
+            self._mute_btn.text = "Mic"
+            self._mute_btn.md_bg_color = SUCCESS
+
+    def _on_mute_touch_down(self, widget, touch):
+        if not widget.collide_point(*touch.pos):
+            return False
+        self._mute_touch_active = True
+        if self.is_muted:
+            self._mute_hold_clock = Clock.schedule_once(lambda _dt: self._begin_hold_ptt(), 0.25)
+        return True
+
+    def _on_mute_touch_up(self, widget, touch):
+        if not self._mute_touch_active:
+            return False
+        self._mute_touch_active = False
+        if self._mute_hold_clock is not None:
+            Clock.unschedule(self._mute_hold_clock)
+            self._mute_hold_clock = None
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        if self._ptt_from_hold:
+            app.controller.set_ptt(False)
+            self._ptt_from_hold = False
+        else:
+            app.controller.toggle_mute()
+        self._sync_mute_button()
+        return True
+
+    def _begin_hold_ptt(self) -> None:
+        self._mute_hold_clock = None
+        if not self.is_muted:
+            return
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        self._ptt_from_hold = True
+        app.controller.set_ptt(True)
+        self._sync_mute_button()
+
+    def _clear_chat(self) -> None:
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.clear_chat()
+
+    def _add_tap_note(self) -> None:
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.prompt_add_tap_note()
+
+    def refresh_tap_notes(self, taps) -> None:
+        from kivymd.uix.button import MDFlatButton, MDIconButton
+        from kivymd.uix.label import MDLabel
+
+        self._tap_notes_box.clear_widgets()
+        if not taps:
+            self._tap_notes_box.add_widget(
+                MDLabel(text="(no tap notes yet)", theme_text_color="Custom", text_color=MUTED, font_style="Caption")
+            )
+            return
+        app = MDApp.get_running_app()
+        for tap in taps:
+            row = MDBoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
+            mark = "✓" if tap.done else "○"
+            peer = tap.peer_name or "Note"
+            row.add_widget(
+                MDFlatButton(
+                    text=f"{mark} {tap.reminder[:40]} · {peer}",
+                    on_release=lambda *_t, sid=tap.save_id: app.controller.open_tap_note(sid),
+                )
+            )
+            row.add_widget(MDBoxLayout(size_hint_x=1))
+            row.add_widget(
+                MDIconButton(
+                    icon="close",
+                    theme_text_color="Custom",
+                    text_color=(0.97, 0.46, 0.56, 1),
+                    on_release=lambda *_t, sid=tap.save_id: app.controller.delete_tap_note(sid),
+                )
+            )
+            self._tap_notes_box.add_widget(row)
+
     def _toggle_mute(self) -> None:
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         app.controller.toggle_mute()
-        self._mute_btn.icon = "microphone-off" if self.is_muted else "microphone"
-
-    def _sync_ptt_icon(self, _instance, value: bool) -> None:
-        if hasattr(self, "_ptt_btn"):
-            self._ptt_btn.icon = "record-circle" if value else "record-circle-outline"
-
-    def _toggle_ptt(self) -> None:
-        app = MDApp.get_running_app()
-        assert hasattr(app, "controller")
-        app.controller.toggle_ptt()
-        self._sync_ptt_icon(self, self.ptt_active)
+        self._sync_mute_button()
 
     def _send_chat(self) -> None:
         app = MDApp.get_running_app()
@@ -457,7 +589,7 @@ class LiveScreen(MDScreen):
         if link_id in self._link_items:
             self.refresh_link_row(link_id, link)
             return
-        from kivymd.uix.button import MDIconButton
+        from kivymd.uix.button import MDIconButton, MDRaisedButton
 
         row = MDBoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         card = MDCard(
@@ -472,12 +604,18 @@ class LiveScreen(MDScreen):
         card.add_widget(MDLabel(text=link.label, theme_text_color="Custom", text_color=TEXT))
         card.bind(on_release=lambda *_: self._set_active(link_id))
 
-        listen = MDIconButton(
+        listen = MDRaisedButton(
             icon="volume-off" if link.listen_muted else "volume-high",
+            md_bg_color=DANGER if link.listen_muted else SUCCESS,
+            size_hint_x=None,
+            width=dp(48),
             on_release=lambda *_: self._listen(link_id),
         )
-        mic = MDIconButton(
+        mic = MDRaisedButton(
             icon="microphone-off" if link.mic_muted else "microphone",
+            md_bg_color=DANGER if link.mic_muted else SUCCESS,
+            size_hint_x=None,
+            width=dp(48),
             on_release=lambda *_: self._mic(link_id),
         )
         disc = MDIconButton(
@@ -498,7 +636,9 @@ class LiveScreen(MDScreen):
         if not item or not link:
             return
         item["listen"].icon = "volume-off" if link.listen_muted else "volume-high"
+        item["listen"].md_bg_color = DANGER if link.listen_muted else SUCCESS
         item["mic"].icon = "microphone-off" if link.mic_muted else "microphone"
+        item["mic"].md_bg_color = DANGER if link.mic_muted else SUCCESS
 
     def set_active_link(self, link_id: str) -> None:
         for lid, item in self._link_items.items():

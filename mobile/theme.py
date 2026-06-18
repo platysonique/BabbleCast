@@ -13,6 +13,8 @@ TEXT = "#c0caf5"
 MUTED = "#565f89"
 SUCCESS = "#9ece6a"
 DANGER = "#f7768e"
+MUTE_ORANGE = "#e0af68"
+SUNFLOWER = "#ffda03"
 
 
 def apply_theme(app: MDApp) -> None:

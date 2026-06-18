@@ -399,3 +399,45 @@ def prompt_disconnect(server_label: str, on_confirm: Callable[[bool], None]) -> 
     )
     holder.append(dialog)
     dialog.open()
+
+
+def prompt_confirm_checkbox(
+    title: str,
+    message: str,
+    confirm_label: str,
+    on_confirm: Callable[[bool], None],
+    *,
+    confirm_color: tuple[float, float, float, float] | None = None,
+) -> None:
+    """Generic confirm with optional skip-future checkbox."""
+    skip_cb = MDCheckbox(size_hint=(None, None), size=(dp(32), dp(32)))
+    row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
+    row.add_widget(skip_cb)
+    row.add_widget(MDLabel(text="Do not ask again", size_hint_x=1))
+    body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+    body.add_widget(MDLabel(text=message, size_hint_y=None))
+    body.add_widget(row)
+    holder: list[MDDialog] = []
+
+    def dismiss() -> None:
+        holder[0].dismiss()
+
+    def confirm(*_args) -> None:
+        skip = bool(skip_cb.active)
+        dismiss()
+        on_confirm(skip)
+
+    confirm_btn = MDRaisedButton(text=confirm_label, on_release=confirm)
+    if confirm_color:
+        confirm_btn.md_bg_color = confirm_color
+    dialog = MDDialog(
+        title=title,
+        type="custom",
+        content_cls=body,
+        buttons=[
+            MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
+            confirm_btn,
+        ],
+    )
+    holder.append(dialog)
+    dialog.open()

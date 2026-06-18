@@ -29,6 +29,12 @@ MAX_ROOM_NAME_LEN = 128
 MAX_TAP_REMINDER_LEN = 512
 DISCOVERY_STALE_SEC = 30
 
+# UI feedback colors (Tokyo Night–aligned)
+UI_ACTIVE_GREEN = "#9ece6a"
+UI_MUTED_RED = "#f7768e"
+UI_MUTE_ORANGE = "#e0af68"
+UI_SUNFLOWER = "#ffda03"
+
 
 def composite_participant_key(link_id: str, client_id: str) -> str:
     """Unique speaker key when bridging multiple servers."""
