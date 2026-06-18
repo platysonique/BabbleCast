@@ -75,9 +75,35 @@ class AndroidAudioRouter:
         if am is None:
             return False
         try:
-            return bool(am.isBluetoothScoAvailable())
+            if bool(am.isBluetoothScoOn()):
+                return True
         except Exception:
+            pass
+        try:
+            autoclass = _jni()
+            BluetoothAdapter = autoclass("android.bluetooth.BluetoothAdapter")
+            BluetoothProfile = autoclass("android.bluetooth.BluetoothProfile")
+            adapter = BluetoothAdapter.getDefaultAdapter()
+            if adapter is None or not adapter.isEnabled():
+                return False
+            connected = int(BluetoothProfile.STATE_CONNECTED)
+            for profile in (
+                BluetoothProfile.HEADSET,
+                BluetoothProfile.A2DP,
+                BluetoothProfile.HEARING_AID,
+            ):
+                try:
+                    if int(adapter.getProfileConnectionState(profile)) == connected:
+                        return True
+                except Exception:
+                    continue
             return False
+        except Exception:
+            logger.debug("Bluetooth connection check failed", exc_info=True)
+            try:
+                return bool(am.isBluetoothA2dpOn())
+            except Exception:
+                return False
 
     def list_routes(self) -> list[tuple[str, str, bool]]:
         """Return (route_id, label, enabled) for UI."""

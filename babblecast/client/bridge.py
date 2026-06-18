@@ -29,6 +29,7 @@ class ServerLinkState:
     connected: bool = False
     client_id: str = ""
     server_name: str = ""
+    is_server_operator: bool = False
     pending_taps: set[str] = field(default_factory=set)
 
 
@@ -54,6 +55,7 @@ class BridgeManager:
         on_tap_open: Callable[[str, str], None] | None = None,
         on_tap_end: Callable[[str, str], None] | None = None,
         on_local_mic_level: Callable[[float], None] | None = None,
+        on_audio_route_changed: Callable[[str], None] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._on_link_connected = on_link_connected
@@ -69,6 +71,7 @@ class BridgeManager:
         self._on_tap_open = on_tap_open
         self._on_tap_end = on_tap_end
         self._on_local_mic_level = on_local_mic_level
+        self._on_audio_route_changed = on_audio_route_changed
         self._local_mic_level = 0.0
         self._last_ws_level_sent = 0.0
         self._links: dict[str, ServerLinkState] = {}
@@ -105,6 +108,7 @@ class BridgeManager:
         self._on_tap_open = None
         self._on_tap_end = None
         self._on_local_mic_level = None
+        self._on_audio_route_changed = None
         for link_id in list(self._sessions.keys()):
             session = self._sessions.pop(link_id, None)
             if session:
@@ -145,9 +149,19 @@ class BridgeManager:
             self._speaker.set_participant_muted(uid, muted)
         try:
             if platform_name() == "android":
-                from babblecast.audio.android_routing import normalize_audio_route
+                from babblecast.audio.android_routing import (
+                    AUDIO_ROUTE_BLUETOOTH,
+                    get_android_router,
+                    normalize_audio_route,
+                )
 
-                self._speaker.start(route=normalize_audio_route(self._settings.android_audio_route))
+                initial_route = normalize_audio_route(self._settings.android_audio_route)
+                if get_android_router().bluetooth_available():
+                    initial_route = AUDIO_ROUTE_BLUETOOTH
+                self._speaker.start(route=initial_route)
+                if initial_route == AUDIO_ROUTE_BLUETOOTH:
+                    self._settings.android_audio_route = AUDIO_ROUTE_BLUETOOTH
+                    save_settings(self._settings)
             else:
                 self._speaker.start()
             self._mic.set_input_volume(self._settings.input_volume)
@@ -157,9 +171,31 @@ class BridgeManager:
             self._teardown_audio()
             return False
         self._audio_started = True
+        if platform_name() == "android":
+            self._start_android_bt_watch()
         return True
 
+    def _start_android_bt_watch(self) -> None:
+        from babblecast.audio.android_bt_watch import start_bluetooth_watch
+        from babblecast.audio.android_routing import AUDIO_ROUTE_BLUETOOTH, AUDIO_ROUTE_SPEAKER
+
+        start_bluetooth_watch(
+            on_connected=lambda: self.set_audio_route(AUDIO_ROUTE_BLUETOOTH),
+            on_disconnected=lambda: self.set_audio_route(AUDIO_ROUTE_SPEAKER),
+        )
+
+    def _notify_audio_route_changed(self, route: str) -> None:
+        if self._on_audio_route_changed:
+            try:
+                self._on_audio_route_changed(route)
+            except RuntimeError:
+                pass
+
     def _teardown_audio(self) -> None:
+        if platform_name() == "android":
+            from babblecast.audio.android_bt_watch import stop_bluetooth_watch
+
+            stop_bluetooth_watch()
         if self._mic:
             try:
                 self._mic.stop(teardown=True)
@@ -227,7 +263,15 @@ class BridgeManager:
             if link and not link.mic_muted and session.connected:
                 session.send_voice_level(level)
 
-    def connect(self, host: str, port: int = DEFAULT_WS_PORT, label: str | None = None, password: str = "") -> str:
+    def connect(
+        self,
+        host: str,
+        port: int = DEFAULT_WS_PORT,
+        label: str | None = None,
+        password: str = "",
+        *,
+        server_operator: bool = False,
+    ) -> str:
         link_id = new_id()
         display = label or f"{host}:{port}"
         state = ServerLinkState(link_id=link_id, label=display, host=host, port=port)
@@ -239,6 +283,7 @@ class BridgeManager:
             session = self._sessions.get(link_id)
             if session:
                 state.client_id = session.client_id
+                state.is_server_operator = session.is_server_operator
                 if session.server_name:
                     state.server_name = session.server_name
                     state.label = f"{session.server_name} ({state.host})"
@@ -273,8 +318,15 @@ class BridgeManager:
                     None,
                 )
         session.update_settings(self._settings)
-        session.connect(host, port, password=password)
+        session.connect(host, port, password=password, server_operator=server_operator)
         return link_id
+
+    def is_server_operator(self, link_id: str) -> bool:
+        session = self._sessions.get(link_id)
+        if session and session.is_server_operator:
+            return True
+        link = self._links.get(link_id)
+        return bool(link and link.is_server_operator)
 
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
         link = self._links.get(link_id)
@@ -378,6 +430,7 @@ class BridgeManager:
         save_settings(self._settings)
         if self._speaker and hasattr(self._speaker, "set_route"):
             self._speaker.set_route(route, mic_restart_cb=self._restart_mic_if_running)
+        self._notify_audio_route_changed(route)
 
     def list_audio_routes(self) -> list[tuple[str, str, bool]]:
         if platform_name() != "android":

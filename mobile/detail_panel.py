@@ -150,6 +150,7 @@ class SideDetailPanel(MDBoxLayout):
                 btn_row.add_widget(btn)
             self._route_row.add_widget(self._route_label)
             self._route_row.add_widget(btn_row)
+            self._refresh_route_ui()
         else:
             self._route_label = None
             self._route_buttons = {}
@@ -240,8 +241,14 @@ class SideDetailPanel(MDBoxLayout):
             self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
         available = {rid: ok for rid, _lbl, ok in self._controller.list_audio_routes()}
         for route_id, btn in self._route_buttons.items():
-            btn.disabled = not available.get(route_id, False)
-            btn.text_color = ACCENT if route_id == selected else MUTED
+            enabled = available.get(route_id, route_id != "bluetooth")
+            btn.disabled = not enabled
+            if enabled:
+                btn.opacity = 1.0
+                btn.text_color = ACCENT if route_id == selected else MUTED
+            else:
+                btn.opacity = 0.38
+                btn.text_color = MUTED
 
     def _route_pressed(self, route_id: str) -> None:
         self._controller.set_audio_route(route_id)
@@ -270,6 +277,8 @@ class SideDetailPanel(MDBoxLayout):
         self._apply_width(animated=animated)
         if self._controller:
             self._controller.set_audio_panel_expanded(expanded)
+        if expanded:
+            self._refresh_route_ui()
 
     def _apply_width(self, *, animated: bool) -> None:
         target_body = self._BODY_W if self._panel_expanded else 0

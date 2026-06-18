@@ -71,6 +71,9 @@ class BabbleController:
             on_local_mic_level=lambda lvl: Clock.schedule_once(
                 lambda _dt, level=lvl: self._on_local_mic_level(level)
             ),
+            on_audio_route_changed=lambda route: Clock.schedule_once(
+                lambda _dt, r=route: self._on_audio_route_changed(r)
+            ),
         )
         self._discovery = ServerDiscovery(
             on_update=lambda s: Clock.schedule_once(lambda _dt, sv=s: self._apply_servers(sv))
@@ -286,7 +289,12 @@ class BabbleController:
         save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self.set_status(f"Connecting {host}:{port}…")
-        self._bridge.connect(host, port, password=password)
+        self._bridge.connect(
+            host,
+            port,
+            password=password,
+            server_operator=self._is_own_server(host, port) or is_local_host(host),
+        )
         self._sync_input_monitoring()
         self.app.switch_tab("live")
 
@@ -381,6 +389,14 @@ class BabbleController:
         live = self.app.screen("live")
         if live and getattr(live, "detail_panel", None):
             live.detail_panel.set_self_mic_level(level)
+
+    def _on_audio_route_changed(self, route: str) -> None:
+        if not self._alive():
+            return
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if panel:
+            panel.sync_from_settings()
 
     def open_user_panel(self, link_id: str, participant: dict) -> None:
         from babblecast.constants import composite_participant_key
@@ -742,7 +758,9 @@ class BabbleController:
         if session and session.room_id == room_id:
             return
         room_meta = session.room_by_id(room_id) if session else None
-        if room_meta and room_meta.get("password_protected"):
+        if room_meta and room_meta.get("password_protected") and not self._bridge.is_server_operator(
+            self._active_link_id
+        ):
             from mobile.credentials_dialog import prompt_room_password
 
             room_name = str(room_meta.get("name", "Room"))

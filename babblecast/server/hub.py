@@ -52,6 +52,7 @@ class ClientState:
     voice_level: float = 0.0
     volume: float = 1.0
     speaking: bool = False
+    is_server_operator: bool = False
     udp_addr: tuple[str, int] | None = None
     udp_source: tuple[str, int] | None = None
     last_presence_at: float = 0.0
@@ -134,6 +135,21 @@ class BabbleCastHub:
             if client.name.casefold() == key:
                 return True
         return False
+
+    def _connection_is_server_operator(self, ws: WebSocketServerProtocol, hello: dict[str, Any]) -> bool:
+        """Host claim — only trusted for connections from this machine."""
+        if not hello.get("server_operator"):
+            return False
+        try:
+            remote = str(ws.remote_address[0]) if ws.remote_address else ""
+        except (AttributeError, IndexError, TypeError):
+            return False
+        if remote in ("127.0.0.1", "::1"):
+            return True
+        local_ips = set(advertise_hosts_for_settings())
+        if self.host not in ("0.0.0.0", "", "127.0.0.1"):
+            local_ips.add(self.host)
+        return remote in local_ips
 
     def _register_udp_source(self, client: ClientState, addr: tuple[str, int]) -> bool:
         """Verify datagram source for voice packets from this client."""
@@ -240,7 +256,7 @@ class BabbleCastHub:
                     )
                 )
                 return
-            if room.password_digest:
+            if room.password_digest and not client.is_server_operator:
                 supplied = str(data.get("password", ""))
                 if not supplied:
                     await client.ws.send(
@@ -579,6 +595,7 @@ class BabbleCastHub:
                     await ws.close(1008, "name taken")
                     return
                 client.name = name
+                client.is_server_operator = self._connection_is_server_operator(ws, hello)
                 self._clients[client_id] = client
                 joined = True
             default = self._default_room()
@@ -593,6 +610,7 @@ class BabbleCastHub:
                     udp_port=self.udp_port,
                     room_id=default.room_id,
                     room_name=default.name,
+                    server_operator=client.is_server_operator,
                 )
             )
             await self._send_rooms(client)

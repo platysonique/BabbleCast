@@ -88,6 +88,8 @@ class ClientSession:
         self._host = ""
         self._ws_port = DEFAULT_WS_PORT
         self._password = ""
+        self._server_operator = False
+        self._is_server_operator = False
         self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
@@ -125,6 +127,10 @@ class ClientSession:
     @property
     def server_name(self) -> str:
         return self._server_name
+
+    @property
+    def is_server_operator(self) -> bool:
+        return self._is_server_operator
 
     @property
     def connected(self) -> bool:
@@ -269,6 +275,7 @@ class ClientSession:
         mtype = data.get("type")
         if mtype == MsgType.WELCOME:
             self._welcomed = True
+            self._is_server_operator = bool(data.get("server_operator"))
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_name = str(data.get("server_name", ""))
@@ -371,6 +378,8 @@ class ClientSession:
         hello_payload: dict[str, Any] = {"name": name, "client_id": self._client_id}
         if self._password:
             hello_payload["password"] = self._password
+        if self._server_operator:
+            hello_payload["server_operator"] = True
         async with websockets.connect(
             uri,
             ping_interval=WS_PING_INTERVAL_SEC,
@@ -430,15 +439,24 @@ class ClientSession:
             if self._on_disconnected and not self._user_disconnect:
                 self._on_disconnected(disconnect_reason or "Connection closed")
 
-    def connect(self, host: str, ws_port: int = DEFAULT_WS_PORT, password: str = "") -> None:
+    def connect(
+        self,
+        host: str,
+        ws_port: int = DEFAULT_WS_PORT,
+        password: str = "",
+        *,
+        server_operator: bool = False,
+    ) -> None:
         if self._running:
             self.disconnect()
         self._user_disconnect = False
         self._welcomed = False
         self._ws_closing = False
+        self._is_server_operator = False
         self._host = host.strip()
         self._ws_port = ws_port
         self._password = password
+        self._server_operator = server_operator
         if not self.is_bridge:
             self._settings.last_server_host = self._host
             self._settings.last_server_port = ws_port

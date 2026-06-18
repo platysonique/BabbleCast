@@ -314,6 +314,42 @@ async def test_protected_room_requires_password_to_join() -> None:
 
 
 @pytest.mark.asyncio
+async def test_server_operator_bypasses_room_password() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18783, udp_port=18784, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18783") as ws_guest:
+            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
+            decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+
+            await ws_guest.send(encode_msg(MsgType.CREATE_ROOM, name="Staff Only", password="secret"))
+            private_room = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                if msg.get("type") == MsgType.ROOM_CREATED.value:
+                    private_room = msg["room"]["room_id"]
+                    break
+            assert private_room
+
+        async with websockets.connect("ws://127.0.0.1:18783") as ws_host:
+            await ws_host.send(encode_msg(MsgType.HELLO, name="Host", server_operator=True))
+            welcome = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+            assert welcome.get("server_operator") is True
+
+            await ws_host.send(encode_msg(MsgType.JOIN_ROOM, room_id=private_room))
+            joined = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+                if msg.get("type") == MsgType.JOINED.value:
+                    joined = msg
+                    break
+            assert joined is not None
+            assert joined["room_id"] == private_room
+    finally:
+        await hub.stop()
+
+
+@pytest.mark.asyncio
 async def test_only_room_creator_can_delete() -> None:
     hub = BabbleCastHub(host="127.0.0.1", ws_port=18781, udp_port=18782, advertise=False)
     await hub.start()

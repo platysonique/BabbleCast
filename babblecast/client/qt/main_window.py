@@ -392,7 +392,7 @@ class MainWindow(QMainWindow):
             save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self._status.setText(f"Connecting to {host}:{port}…")
-        self._bridge.connect(host, port, label=label, password=password)
+        self._bridge.connect(host, port, label=label, password=password, server_operator=own or is_local_host(host))
 
     def _toggle_host(self) -> None:
         if self._embedded and self._embedded.running:
@@ -800,7 +800,11 @@ class MainWindow(QMainWindow):
         password = ""
         if session:
             room_meta = session.room_by_id(room_id)
-            if room_meta and room_meta.get("password_protected"):
+            if (
+                room_meta
+                and room_meta.get("password_protected")
+                and not self._bridge.is_server_operator(self._active_link_id)
+            ):
                 dlg = RoomPasswordDialog(str(room_meta.get("name", "Room")), self)
                 if dlg.exec() != QDialog.DialogCode.Accepted:
                     return
