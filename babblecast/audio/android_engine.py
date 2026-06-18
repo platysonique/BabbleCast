@@ -5,11 +5,19 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 
 import numpy as np
 
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
-from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.constants import (
+    CHANNELS,
+    FRAME_BYTES,
+    FRAME_DURATION_SEC,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    VOICE_PLAYBACK_QUEUE_MAX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +26,36 @@ def _jni():
     from jnius import autoclass
 
     return autoclass
+
+
+def _enable_speakerphone() -> object | None:
+    """Route VoIP playback to the loudspeaker (not earpiece)."""
+    try:
+        autoclass = _jni()
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Context = autoclass("android.content.Context")
+        AudioManager = autoclass("android.media.AudioManager")
+        activity = PythonActivity.mActivity
+        if activity is None:
+            return None
+        am = activity.getSystemService(Context.AUDIO_SERVICE)
+        am.setMode(AudioManager.MODE_IN_COMMUNICATION)
+        am.setSpeakerphoneOn(True)
+        return am
+    except Exception:
+        logger.exception("Failed to enable speakerphone routing")
+        return None
+
+
+def _disable_speakerphone(am) -> None:
+    if am is None:
+        return
+    try:
+        AudioManager = _jni()("android.media.AudioManager")
+        am.setSpeakerphoneOn(False)
+        am.setMode(AudioManager.MODE_NORMAL)
+    except Exception:
+        logger.debug("Speakerphone reset failed", exc_info=True)
 
 
 class AndroidMicCapture:
@@ -146,6 +184,7 @@ class AndroidSpeakerOutput:
         self._participant_volumes: dict[str, float] = {}
         self._participant_muted: dict[str, bool] = {}
         self._track = None
+        self._audio_manager = None
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -169,7 +208,7 @@ class AndroidSpeakerOutput:
         if self._participant_muted.get(client_id, False):
             return
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=8))
+        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX))
         try:
             buf.put_nowait(arr)
         except queue.Full:
@@ -194,37 +233,70 @@ class AndroidSpeakerOutput:
         return np.clip(mix * self._master_volume, -1.0, 1.0)
 
     def _loop(self) -> None:
-        pcm = (np.zeros(FRAME_SAMPLES, dtype=np.float32)).astype(np.int16)
+        pcm = np.zeros(FRAME_SAMPLES, dtype=np.int16)
+        next_tick = time.monotonic()
         while self._running:
             frame = self._mix()
             pcm = (frame * 32767.0).astype(np.int16)
             self._track.write(pcm.tobytes(), 0, len(pcm) * 2)
+            next_tick += FRAME_DURATION_SEC
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            elif sleep_for < -FRAME_DURATION_SEC:
+                next_tick = time.monotonic()
+
+    def _create_track(self, autoclass, AudioFormat, AudioTrack, min_buf: int):
+        """Prefer AudioAttributes (VoIP) over legacy STREAM_VOICE_CALL → earpiece."""
+        try:
+            attrs_builder = autoclass("android.media.AudioAttributes").Builder()
+            attrs_builder.setUsage(autoclass("android.media.AudioAttributes").USAGE_VOICE_COMMUNICATION)
+            attrs_builder.setContentType(autoclass("android.media.AudioAttributes").CONTENT_TYPE_SPEECH)
+            attrs = attrs_builder.build()
+            fmt_builder = AudioFormat.Builder()
+            fmt_builder.setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            fmt_builder.setSampleRate(SAMPLE_RATE)
+            fmt_builder.setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+            fmt = fmt_builder.build()
+            return AudioTrack(
+                attrs,
+                fmt,
+                min_buf * 2,
+                AudioTrack.MODE_STREAM,
+                0,
+            )
+        except Exception:
+            logger.debug("AudioAttributes AudioTrack failed; falling back to legacy stream type", exc_info=True)
+            AudioManager = autoclass("android.media.AudioManager")
+            return AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                min_buf * 2,
+                AudioTrack.MODE_STREAM,
+            )
 
     def start(self) -> None:
         if self._thread:
             return
+        self._audio_manager = _enable_speakerphone()
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioTrack = autoclass("android.media.AudioTrack")
-        AudioManager = autoclass("android.media.AudioManager")
         min_buf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-        self._track = AudioTrack(
-            AudioManager.STREAM_VOICE_CALL,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            min_buf * 2,
-            AudioTrack.MODE_STREAM,
-        )
+        if min_buf <= 0:
+            raise RuntimeError(f"AudioTrack.getMinBufferSize failed: {min_buf}")
+        self._track = self._create_track(autoclass, AudioFormat, AudioTrack, min_buf)
         self._track.play()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()
-        logger.info("Android speaker output started")
+        logger.info("Android speaker output started (speakerphone routed)")
 
     def stop(self) -> None:
         self._running = False
@@ -243,6 +315,8 @@ class AndroidSpeakerOutput:
             except Exception:
                 pass
             self._track = None
+        _disable_speakerphone(self._audio_manager)
+        self._audio_manager = None
 
     def set_device(self, device_key: str | None) -> None:
         pass

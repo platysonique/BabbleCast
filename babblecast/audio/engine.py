@@ -6,6 +6,7 @@ import logging
 import queue
 import threading
 import time
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -13,7 +14,14 @@ import sounddevice as sd
 
 from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
-from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.constants import (
+    CHANNELS,
+    FRAME_BYTES,
+    FRAME_DURATION_SEC,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    VOICE_PLAYBACK_QUEUE_MAX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +154,7 @@ class SpeakerOutput:
         self._device_key = device_key
         self._master_volume = master_volume
         self._stream: sd.OutputStream | None = None
-        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
+        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX)
         self._mix_lock = threading.Lock()
         self._participant_buffers: dict[str, queue.Queue[np.ndarray]] = {}
         self._participant_volumes: dict[str, float] = {}
@@ -174,7 +182,7 @@ class SpeakerOutput:
         if self._participant_muted.get(client_id, False):
             return
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=8))
+        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX))
         try:
             buf.put_nowait(arr)
         except queue.Full:
@@ -200,12 +208,26 @@ class SpeakerOutput:
         return mix
 
     def _worker_loop(self) -> None:
+        next_tick = time.monotonic()
         while self._running:
             frame = self._mix_frame()
             try:
-                self._queue.put(frame, timeout=0.05)
+                self._queue.put(frame, timeout=0.02)
             except queue.Full:
-                pass
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(frame)
+                except queue.Full:
+                    pass
+            next_tick += FRAME_DURATION_SEC
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            elif sleep_for < -FRAME_DURATION_SEC:
+                next_tick = time.monotonic()
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         try:

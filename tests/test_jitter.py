@@ -5,11 +5,9 @@ from __future__ import annotations
 from babblecast.audio.jitter import VoiceJitterBuffer
 
 
-def test_jitter_priming_requires_two_packets() -> None:
+def test_jitter_priming_plays_first_packet() -> None:
     jb = VoiceJitterBuffer()
-    assert jb.push(1, b"opus") == []
-    out = jb.push(2, b"opus2")
-    assert out == [b"opus", b"opus2"]
+    assert jb.push(1, b"opus") == [b"opus"]
 
 
 def test_jitter_duplicate_dropped() -> None:

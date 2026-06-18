@@ -207,8 +207,6 @@ class PersonNameRow(MDBoxLayout):
         )
 
     def set_speaking(self, speaking: bool) -> None:
-        from mobile.theme import SUCCESS
-
         self._led.text_color = SUCCESS if speaking else MUTED
 
     def on_touch_up(self, touch):
@@ -470,7 +468,6 @@ class LiveScreen(MDScreen):
             ripple_behavior=True,
         )
         from kivymd.uix.label import MDLabel
-        from mobile.theme import ACCENT, SURFACE, TEXT
 
         card.add_widget(MDLabel(text=link.label, theme_text_color="Custom", text_color=TEXT))
         card.bind(on_release=lambda *_: self._set_active(link_id))
@@ -504,8 +501,6 @@ class LiveScreen(MDScreen):
         item["mic"].icon = "microphone-off" if link.mic_muted else "microphone"
 
     def set_active_link(self, link_id: str) -> None:
-        from mobile.theme import ACCENT, SURFACE
-
         for lid, item in self._link_items.items():
             item["card"].md_bg_color = ACCENT if lid == link_id else SURFACE
 

@@ -10,6 +10,17 @@ SAMPLE_RATE = 48000
 CHANNELS = 1
 FRAME_SAMPLES = 960  # 20 ms @ 48 kHz
 FRAME_BYTES = FRAME_SAMPLES * 2  # int16 mono
+FRAME_DURATION_SEC = FRAME_SAMPLES / SAMPLE_RATE
+
+# Voice playback — keep queues shallow for LAN (Jamulus-style low latency).
+VOICE_PLAYBACK_QUEUE_MAX = 3
+
+# WebSocket keepalive — tolerant of Wi‑Fi / mesh hiccups.
+WS_PING_INTERVAL_SEC = 30
+WS_PING_TIMEOUT_SEC = 60
+
+# Cap control-plane voice-level updates (mic meter → server presence).
+VOICE_LEVEL_WS_MIN_INTERVAL_SEC = 0.1
 
 UDP_MAGIC = b"BBC\x01"
 MAX_CHAT_LEN = 4096

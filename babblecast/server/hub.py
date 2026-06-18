@@ -12,7 +12,7 @@ from typing import Any
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT
+from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, WS_PING_INTERVAL_SEC, WS_PING_TIMEOUT_SEC
 from babblecast.discovery import ServerAdvertiser
 from babblecast.network import advertise_hosts_for_settings
 from babblecast.server.auth import check_password, make_password_verifier
@@ -656,8 +656,8 @@ class BabbleCastHub:
             self._ws_handler,
             self.host,
             self.ws_port,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=WS_PING_INTERVAL_SEC,
+            ping_timeout=WS_PING_TIMEOUT_SEC,
             max_size=2**20,
             logger=_ws_probe_logger,
         )

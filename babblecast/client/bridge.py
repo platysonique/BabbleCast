@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -11,7 +12,7 @@ from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.client.session import ClientSession
 from babblecast.config import UserSettings, get_settings, save_settings
-from babblecast.constants import DEFAULT_WS_PORT
+from babblecast.constants import DEFAULT_WS_PORT, VOICE_LEVEL_WS_MIN_INTERVAL_SEC
 from babblecast.protocol import new_id
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class BridgeManager:
         self._on_tap_end = on_tap_end
         self._on_local_mic_level = on_local_mic_level
         self._local_mic_level = 0.0
+        self._last_ws_level_sent = 0.0
         self._links: dict[str, ServerLinkState] = {}
         self._sessions: dict[str, ClientSession] = {}
         self._lock = threading.Lock()
@@ -154,10 +156,16 @@ class BridgeManager:
 
     def _teardown_audio(self) -> None:
         if self._mic:
-            self._mic.stop(teardown=True)
+            try:
+                self._mic.stop(teardown=True)
+            except Exception:
+                logger.exception("Mic teardown failed")
             self._mic = None
         if self._speaker:
-            self._speaker.stop()
+            try:
+                self._speaker.stop()
+            except Exception:
+                logger.exception("Speaker teardown failed")
             self._speaker = None
         self._audio_started = False
 
@@ -205,6 +213,10 @@ class BridgeManager:
                 self._on_local_mic_level(level)
             except RuntimeError:
                 pass
+        now = time.monotonic()
+        if now - self._last_ws_level_sent < VOICE_LEVEL_WS_MIN_INTERVAL_SEC:
+            return
+        self._last_ws_level_sent = now
         for link_id, session in list(self._sessions.items()):
             link = self._links.get(link_id)
             if link and not link.mic_muted and session.connected:

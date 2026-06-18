@@ -6,6 +6,7 @@ import asyncio
 import logging
 import socket
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -15,7 +16,15 @@ from babblecast.audio.codec import OpusCodec
 from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
-from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, FRAME_BYTES, composite_participant_key
+from babblecast.constants import (
+    DEFAULT_UDP_PORT,
+    DEFAULT_WS_PORT,
+    FRAME_BYTES,
+    VOICE_LEVEL_WS_MIN_INTERVAL_SEC,
+    WS_PING_INTERVAL_SEC,
+    WS_PING_TIMEOUT_SEC,
+    composite_participant_key,
+)
 from babblecast.config import UserSettings, get_settings, save_settings
 from babblecast.network import is_private_lan_ipv4
 from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id, parse_error_code
@@ -84,6 +93,8 @@ class ClientSession:
         self._audio_started = False
         self._welcomed = False
         self._last_level_sent = 0.0
+        self._last_level_sent_at = 0.0
+        self._ws_closing = False
         self._jitter: dict[str, VoiceJitterBuffer] = {}
         self._jitter_lock = threading.Lock()
         self._codec_lock = threading.Lock()
@@ -152,6 +163,22 @@ class ClientSession:
             self._speaker.set_participant_muted(uid, muted)
         self._mic.set_input_volume(self._settings.input_volume)
 
+    def _schedule_send(self, coro) -> None:
+        if self._ws_closing or not self._loop or not self._ws:
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+            def _done(fut: asyncio.Future) -> None:
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+
+            future.add_done_callback(_done)
+        except RuntimeError:
+            pass
+
     def send_voice_pcm(self, pcm: bytes) -> None:
         if self._bridge_mic_muted or not self._room_id or not self._udp_sock:
             return
@@ -182,15 +209,16 @@ class ClientSession:
         self.send_voice_pcm(pcm)
 
     def _on_voice_level(self, level: float) -> None:
-        if not self._loop or not self._ws:
+        if self._ws_closing or not self._loop or not self._ws:
+            return
+        now = time.monotonic()
+        if now - self._last_level_sent_at < VOICE_LEVEL_WS_MIN_INTERVAL_SEC:
             return
         if abs(level - self._last_level_sent) < 0.04 and (level > 0.05) == (self._last_level_sent > 0.05):
             return
         self._last_level_sent = level
-        asyncio.run_coroutine_threadsafe(
-            self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)),
-            self._loop,
-        )
+        self._last_level_sent_at = now
+        self._schedule_send(self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)))
 
     def _start_udp(self) -> None:
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -343,7 +371,11 @@ class ClientSession:
         hello_payload: dict[str, Any] = {"name": name, "client_id": self._client_id}
         if self._password:
             hello_payload["password"] = self._password
-        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+        async with websockets.connect(
+            uri,
+            ping_interval=WS_PING_INTERVAL_SEC,
+            ping_timeout=WS_PING_TIMEOUT_SEC,
+        ) as ws:
             self._ws = ws
             await ws.send(encode_msg(MsgType.HELLO, **hello_payload))
             async for raw in ws:
@@ -357,6 +389,7 @@ class ClientSession:
 
     def _shutdown_transport(self, *, close_ws: bool = True) -> None:
         """Stop network/audio I/O without firing disconnect callbacks."""
+        self._ws_closing = True
         self._running = False
         self._stop_audio()
         if self._udp_sock:
@@ -402,6 +435,7 @@ class ClientSession:
             self.disconnect()
         self._user_disconnect = False
         self._welcomed = False
+        self._ws_closing = False
         self._host = host.strip()
         self._ws_port = ws_port
         self._password = password
@@ -518,8 +552,9 @@ class ClientSession:
         self._send_async(encode_msg(MsgType.ROOM_LIST))
 
     def _send_async(self, message: str) -> None:
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
+        if self._ws_closing:
+            return
+        self._schedule_send(self._send(message))
 
     def update_settings(self, settings: UserSettings) -> None:
         self._settings = settings

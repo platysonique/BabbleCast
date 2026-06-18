@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,8 @@ from babblecast.discovery import ServerDiscovery
 from babblecast.network import primary_lan_ipv4
 from babblecast.network import is_local_host, is_valid_connect_target
 from babblecast.protocol import is_name_taken_error, is_password_error
+
+logger = logging.getLogger(__name__)
 from babblecast.server.embedded import EmbeddedServer
 from babblecast.taps import SavedTap, get_tap_store
 from mobile.android_network import acquire_multicast_lock, release_multicast_lock
@@ -538,15 +541,19 @@ class BabbleController:
         if not self._active_link_id:
             self._active_link_id = link_id
         self._bridge.request_rooms(link_id)
-        live = self.app.screen("live")
-        live.add_connected_link(link_id, link)
-        live.set_active_link(link_id)
+        try:
+            live = self.app.screen("live")
+            live.add_connected_link(link_id, link)
+            live.set_active_link(link_id)
+            rooms = self._rooms.get(link_id, [])
+            live.update_rooms(rooms, self._active_link_id == link_id, self._current_room_id(link_id))
+            if link_id == self._active_link_id:
+                self._reload_chat(link_id)
+        except Exception:
+            logger.exception("Live UI update failed after connect")
+            self.set_status("Connected — UI refresh failed; try Live tab")
         n = sum(1 for l in self._bridge.links if l.connected)
         self.set_status(f"{n} server(s) connected")
-        rooms = self._rooms.get(link_id, [])
-        live.update_rooms(rooms, self._active_link_id == link_id, self._current_room_id(link_id))
-        if link_id == self._active_link_id:
-            self._reload_chat(link_id)
         self._sync_voice_foreground()
 
     def _on_link_disconnected(self, link_id: str, reason: str) -> None:
