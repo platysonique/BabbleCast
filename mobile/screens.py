@@ -14,6 +14,7 @@ from kivymd.uix.screen import MDScreen
 
 from babblecast.client.bridge import BridgeManager
 from babblecast.config import get_settings
+from babblecast.constants import babblecast_subnet_example_host, babblecast_subnet_prefix, DEFAULT_WS_PORT
 from mobile.theme import ACCENT, BG, MUTED, SUCCESS, SURFACE, TEXT
 
 class ConnectScreen(MDScreen):
@@ -58,7 +59,7 @@ class ConnectScreen(MDScreen):
         server_scroll.add_widget(self._server_box)
 
         manual_label = MDLabel(
-            text="Or enter server IP / name.babblecast.local (never 127.0.0.1 from another device)",
+            text=f"Or enter {babblecast_subnet_prefix()}.x + port {DEFAULT_WS_PORT} (127.0.0.1 only on same device)",
             font_style="H6",
             theme_text_color="Custom",
             text_color=TEXT,
@@ -66,13 +67,13 @@ class ConnectScreen(MDScreen):
         manual_row = MDBoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
         settings = get_settings()
         self._host_field = MDTextField(
-            hint_text="Server IP",
-            text=settings.last_server_host or "",
+            hint_text=f"BabbleCast IP ({babblecast_subnet_example_host(20)})",
+            text=settings.last_server_host or settings.babblecast_ip or "",
             size_hint_x=0.65,
         )
         self._port_field = MDTextField(
             hint_text="Port",
-            text=str(settings.last_server_port or 8765),
+            text=str(settings.last_server_port or DEFAULT_WS_PORT),
             size_hint_x=0.35,
         )
         manual_row.add_widget(self._host_field)
@@ -106,9 +107,9 @@ class ConnectScreen(MDScreen):
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         try:
-            port = int(self._port_field.text.strip() or "8765")
+            port = int(self._port_field.text.strip() or str(DEFAULT_WS_PORT))
         except ValueError:
-            port = 8765
+            port = DEFAULT_WS_PORT
         app.controller.connect_to(self._host_field.text, port)
 
     def set_hosting(self, active: bool) -> None:

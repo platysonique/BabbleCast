@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from babblecast.constants import MAX_NAME_LEN
+from babblecast.config import get_settings
+from babblecast.constants import MAX_NAME_LEN, babblecast_subnet_example_host, babblecast_subnet_prefix
+from babblecast.network import is_babblecast_subnet_ip
 
 
 def _clean_name(text: str) -> str:
@@ -83,6 +85,10 @@ class HostCredentialsDialog(QDialog):
         self._server = QLineEdit(default_server or default_name or socket.gethostname())
         self._server.setPlaceholderText("Name others see in Discover")
         layout.addRow("Server name", self._server)
+        settings = get_settings()
+        self._babblecast_ip = QLineEdit(settings.babblecast_ip or babblecast_subnet_example_host(10))
+        self._babblecast_ip.setPlaceholderText(f"{babblecast_subnet_prefix()}.x — your BabbleCast address")
+        layout.addRow("BabbleCast IP", self._babblecast_ip)
         self._name = QLineEdit(default_name or socket.gethostname())
         self._name.setPlaceholderText("Your display name on this server")
         layout.addRow("Your name", self._name)
@@ -117,6 +123,13 @@ class HostCredentialsDialog(QDialog):
         if self._protect.isChecked() and not self._password.text():
             QMessageBox.warning(self, "BabbleCast", "Enter a password or uncheck Password protect.")
             return
+        if not is_babblecast_subnet_ip(self._babblecast_ip.text().strip()):
+            QMessageBox.warning(
+                self,
+                "BabbleCast",
+                f"Enter an IP in {babblecast_subnet_prefix()}.x (e.g. {babblecast_subnet_example_host(10)}).",
+            )
+            return
         self.accept()
 
     @property
@@ -132,6 +145,10 @@ class HostCredentialsDialog(QDialog):
         if self._protect.isChecked():
             return self._password.text()
         return ""
+
+    @property
+    def babblecast_ip(self) -> str:
+        return self._babblecast_ip.text().strip()
 
 
 class DisconnectConfirmDialog(QDialog):

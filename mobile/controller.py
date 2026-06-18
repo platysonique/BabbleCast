@@ -18,7 +18,7 @@ from babblecast.client.room_controller import (
     should_disconnect_failed_connect,
 )
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import MAX_NAME_LEN, composite_participant_key
+from babblecast.constants import DEFAULT_WS_PORT, babblecast_subnet_prefix, composite_participant_key
 from babblecast.discovery import ServerDiscovery
 from babblecast.network import is_local_host
 from babblecast.protocol import is_name_taken_error, is_password_error
@@ -167,7 +167,7 @@ class BabbleController:
             screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status(
-                "No servers yet — scanning your subnet, or enter IP / name.babblecast.local"
+                f"No servers yet — scanning {babblecast_subnet_prefix()}.x, or enter IP below"
             )
 
     def _password_required_for(self, host: str, port: int) -> bool:
@@ -196,7 +196,7 @@ class BabbleController:
         try:
             port = int(port)
         except (TypeError, ValueError):
-            self.set_status("Port must be a number (usually 8765)")
+            self.set_status(f"Port must be a number (usually {DEFAULT_WS_PORT})")
             return
         self._pending_host = host
         self._pending_port = port
@@ -258,7 +258,7 @@ class BabbleController:
         password: str = "",
     ) -> None:
         host = (host or self._pending_host or self._settings.last_server_host or "").strip()
-        port = port or self._pending_port or self._settings.last_server_port or 8765
+        port = port or self._pending_port or self._settings.last_server_port or DEFAULT_WS_PORT
         if not host:
             self.set_status("Pick a discovered server or enter IP:port below")
             return
@@ -282,9 +282,14 @@ class BabbleController:
             return
         from mobile.credentials_dialog import prompt_host
 
-        prompt_host(lambda server, name, pwd: self._start_host_with_name(server, name, pwd))
+        prompt_host(lambda server, name, pwd, bbc_ip: self._start_host_with_name(server, name, pwd, bbc_ip))
 
-    def _start_host_with_name(self, server_name: str, display_name: str, password: str = "") -> None:
+    def _start_host_with_name(
+        self, server_name: str, display_name: str, password: str = "", babblecast_ip: str = ""
+    ) -> None:
+        if babblecast_ip:
+            self._settings.babblecast_ip = babblecast_ip
+            save_settings(self._settings)
         self._settings.display_name = display_name
         self._own_server_password = password
         self._start_host(server_name)
@@ -456,7 +461,7 @@ class BabbleController:
         detail = reason
         if "98" in reason or "already in use" in reason.lower():
             detail = (
-                f"{reason} — port 8765 in use. Connect to the existing server instead of hosting."
+                f"{reason} — port {DEFAULT_WS_PORT} in use. Connect to the existing server instead of hosting."
             )
         self.set_status(f"Host failed: {detail}")
 
@@ -485,7 +490,7 @@ class BabbleController:
         link = self._bridge.get_link(link_id)
         label = link.label if link else link_id
         host = link.host if link else self._pending_host or ""
-        port = link.port if link else self._pending_port or 8765
+        port = link.port if link else self._pending_port or DEFAULT_WS_PORT
         if is_name_taken_error(error_code, message):
             self.set_status(f"Name taken on {label} — pick another display name")
             from mobile.credentials_dialog import prompt_connect

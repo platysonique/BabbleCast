@@ -29,9 +29,10 @@ class UserSettings:
     input_volume: float = 1.0
     output_volume: float = 1.0
     ptt_key: str = "space"
-    last_server_host: str = "127.0.0.1"
-    last_server_port: int = 8765
+    last_server_host: str = ""
+    last_server_port: int = 9513
     hosted_server_name: str = ""
+    babblecast_ip: str = ""
     per_user_volumes: dict[str, float] = field(default_factory=dict)
     per_user_muted: dict[str, bool] = field(default_factory=dict)
     window_geometry: list[int] | None = None
@@ -55,9 +56,10 @@ class UserSettings:
                 input_volume=float(raw.get("input_volume", 1.0)),
                 output_volume=float(raw.get("output_volume", 1.0)),
                 ptt_key=str(raw.get("ptt_key", "space")),
-                last_server_host=str(raw.get("last_server_host", "127.0.0.1")),
-                last_server_port=int(raw.get("last_server_port", 8765)),
+                last_server_host=str(raw.get("last_server_host", "")),
+                last_server_port=int(raw.get("last_server_port", 9513)),
                 hosted_server_name=str(raw.get("hosted_server_name", "")),
+                babblecast_ip=str(raw.get("babblecast_ip", "")),
                 per_user_volumes=dict(raw.get("per_user_volumes", {})),
                 per_user_muted={k: bool(v) for k, v in raw.get("per_user_muted", {}).items()},
                 window_geometry=raw.get("window_geometry"),

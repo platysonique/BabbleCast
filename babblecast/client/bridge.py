@@ -11,6 +11,7 @@ from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.client.session import ClientSession
 from babblecast.config import UserSettings, get_settings, save_settings
+from babblecast.constants import DEFAULT_WS_PORT
 from babblecast.protocol import new_id
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,7 @@ class BridgeManager:
             if link and not link.mic_muted and session.connected:
                 session.send_voice_level(level)
 
-    def connect(self, host: str, port: int = 8765, label: str | None = None, password: str = "") -> str:
+    def connect(self, host: str, port: int = DEFAULT_WS_PORT, label: str | None = None, password: str = "") -> str:
         link_id = new_id()
         display = label or f"{host}:{port}"
         state = ServerLinkState(link_id=link_id, label=display, host=host, port=port)

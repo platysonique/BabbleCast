@@ -39,7 +39,7 @@ from babblecast.client.qt.server_link_widget import ServerLinkWidget
 from babblecast.client.qt.styles import STYLESHEET
 from babblecast.client.qt.tap_chat_dialog import TapChatDialog
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import composite_participant_key
+from babblecast.constants import DEFAULT_WS_PORT, composite_participant_key
 from babblecast.discovery import DiscoveredServer, ServerDiscovery
 from babblecast.client.room_controller import (
     chat_lines,
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self._room_by_link: dict[str, tuple[str, str]] = {}
         self._pending_embedded_connect = False
         self._embedded_host: str = "127.0.0.1"
-        self._embedded_port: int = 8765
+        self._embedded_port: int = DEFAULT_WS_PORT
         self._own_server_password: str = ""
 
         self._build_ui()
@@ -406,6 +406,7 @@ class MainWindow(QMainWindow):
             return
         name = dlg.server_name
         self._settings.hosted_server_name = name
+        self._settings.babblecast_ip = dlg.babblecast_ip
         self._settings.display_name = dlg.display_name
         self._own_server_password = dlg.server_password
         save_settings(self._settings)
@@ -460,7 +461,7 @@ class MainWindow(QMainWindow):
         detail = reason
         if "98" in reason or "already in use" in reason.lower():
             detail = (
-                f"{reason}\n\nPort 8765 is already in use. "
+                f"{reason}\n\nPort {DEFAULT_WS_PORT} is already in use. "
                 "Another BabbleCast may be running — use Connect instead of Host."
             )
         QMessageBox.critical(self, "BabbleCast — host failed", detail)

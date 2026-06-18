@@ -14,7 +14,8 @@ from kivymd.uix.label import MDLabel
 from kivymd.uix.textfield import MDTextField
 
 from babblecast.config import get_settings, save_settings
-from babblecast.constants import MAX_NAME_LEN
+from babblecast.constants import MAX_NAME_LEN, babblecast_subnet_example_host, babblecast_subnet_prefix
+from babblecast.network import is_babblecast_subnet_ip
 
 _ERROR_COLOR = (0.97, 0.46, 0.56, 1)
 
@@ -105,12 +106,19 @@ def prompt_connect(
     dialog.open()
 
 
-def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
-    """Returns (server_name, display_name, password) via callback."""
+def prompt_host(on_ok: Callable[[str, str, str, str], None]) -> None:
+    """Returns (server_name, display_name, password, babblecast_ip) via callback."""
     settings = get_settings()
+    example = babblecast_subnet_example_host(10)
     server_field = MDTextField(
         hint_text="Server name (Discover)",
         text=settings.hosted_server_name or settings.display_name or socket.gethostname(),
+        size_hint_y=None,
+        height=dp(48),
+    )
+    ip_field = MDTextField(
+        hint_text=f"Your BabbleCast IP ({babblecast_subnet_prefix()}.x)",
+        text=settings.babblecast_ip or example,
         size_hint_y=None,
         height=dp(48),
     )
@@ -142,6 +150,7 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
     error_label = _error_label()
     body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
     body.add_widget(server_field)
+    body.add_widget(ip_field)
     body.add_widget(name_field)
     body.add_widget(protect_row)
     body.add_widget(password_field)
@@ -156,6 +165,13 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
         if not server:
             _set_error(error_label, "Enter a server name.")
             return
+        bbc_ip = ip_field.text.strip()
+        if not is_babblecast_subnet_ip(bbc_ip):
+            _set_error(
+                error_label,
+                f"Use an IP in {babblecast_subnet_prefix()}.x (e.g. {example}).",
+            )
+            return
         name = _clean_name(name_field.text)
         pwd = password_field.text if protect_cb.active else ""
         if protect_cb.active and not pwd.strip():
@@ -163,10 +179,11 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
             return
         _set_error(error_label, "")
         settings.hosted_server_name = server
+        settings.babblecast_ip = bbc_ip
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        on_ok(server, name, pwd)
+        on_ok(server, name, pwd, bbc_ip)
 
     dialog = MDDialog(
         title="Host server",

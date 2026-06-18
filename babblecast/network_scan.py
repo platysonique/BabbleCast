@@ -1,4 +1,4 @@
-"""Fallback LAN scan when mDNS browse finds nothing (AP isolation, VLANs, etc.)."""
+"""Scan the BabbleCast subnet (11.2.9.x) for open voice servers."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from babblecast.constants import DEFAULT_WS_PORT
-from babblecast.network import local_ipv4_addresses, same_subnet_24
+from babblecast.network import babblecast_scan_targets
 
 logger = logging.getLogger(__name__)
 
@@ -22,33 +22,14 @@ def _probe_host(ip: str, port: int, timeout: float) -> str | None:
         return None
 
 
-def scan_local_subnets_for_servers(
+def scan_babblecast_subnet_for_servers(
     ws_port: int = DEFAULT_WS_PORT,
     *,
     connect_timeout: float = 0.12,
     max_workers: int = 64,
 ) -> list[str]:
-    """TCP-probe the /24 around each local interface for an open BabbleCast WS port.
-
-    This is the fallback when mDNS cannot cross wired↔Wi‑Fi boundaries or the
-    router blocks multicast. It does not replace mDNS — it fills the gap when
-    browse returns empty.
-    """
-    client_ips = local_ipv4_addresses()
-    if not client_ips:
-        return []
-
-    targets: list[str] = []
-    seen: set[str] = set()
-    for client_ip in client_ips:
-        prefix = ".".join(client_ip.split(".")[:3])
-        for last in range(1, 255):
-            candidate = f"{prefix}.{last}"
-            if candidate == client_ip or candidate in seen:
-                continue
-            seen.add(candidate)
-            targets.append(candidate)
-
+    """TCP-probe only the BabbleCast subnet for an open WebSocket port."""
+    targets = babblecast_scan_targets()
     found: list[str] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -61,18 +42,18 @@ def scan_local_subnets_for_servers(
 
     found.sort(key=lambda s: tuple(int(p) for p in s.split(".")))
     if found:
-        logger.info("Subnet scan found %s BabbleCast port(s) open on %s", len(found), ws_port)
+        logger.info(
+            "BabbleCast subnet scan found %s server(s) on port %s",
+            len(found),
+            ws_port,
+        )
     return found
 
 
-def merge_scan_with_client_subnets(scan_ips: list[str], client_ips: list[str] | None = None) -> list[str]:
-    """Prefer scan hits on the same /24 as a local interface."""
-    client_ips = client_ips or local_ipv4_addresses()
-    same: list[str] = []
-    other: list[str] = []
-    for ip in scan_ips:
-        if any(same_subnet_24(ip, c) for c in client_ips):
-            same.append(ip)
-        else:
-            other.append(ip)
-    return same + other
+# Back-compat alias used by discovery
+scan_local_subnets_for_servers = scan_babblecast_subnet_for_servers
+
+
+def merge_scan_with_client_subnets(scan_ips: list[str], client_ips=None) -> list[str]:
+    """Scan results are already BabbleCast-subnet only — preserve order."""
+    return list(scan_ips)

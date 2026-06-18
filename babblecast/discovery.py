@@ -13,7 +13,7 @@ from typing import Callable
 from zeroconf import IPVersion, InterfaceChoice, ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, DISCOVERY_STALE_SEC, LOCAL_DOMAIN, SERVICE_TYPE
-from babblecast.network import local_ipv4_addresses, pick_reachable_server_ip
+from babblecast.network import is_babblecast_subnet_ip, pick_reachable_server_ip
 from babblecast.network_scan import merge_scan_with_client_subnets, scan_local_subnets_for_servers
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,8 @@ class ServerDiscovery:
     def _resolve(self, service_name: str, info: ServiceInfo) -> None:
         raw_addresses = [socket.inet_ntoa(addr) for addr in (info.addresses or [])]
         non_loopback = [ip for ip in raw_addresses if not ip.startswith("127.")]
-        address_pool = non_loopback or raw_addresses
+        babblecast_pool = [ip for ip in non_loopback if is_babblecast_subnet_ip(ip)]
+        address_pool = babblecast_pool or non_loopback or raw_addresses
         host = pick_reachable_server_ip(address_pool) if address_pool else ""
         if not host:
             return

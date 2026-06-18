@@ -14,7 +14,7 @@ from websockets.server import WebSocketServerProtocol
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT
 from babblecast.discovery import ServerAdvertiser
-from babblecast.network import local_ipv4_addresses
+from babblecast.network import advertise_hosts_for_settings, local_ipv4_addresses
 from babblecast.server.auth import check_password, make_password_verifier
 from babblecast.protocol import (
     ErrorCode,
@@ -614,17 +614,26 @@ class BabbleCastHub:
         )
         self._udp_transport = transport
         if self.advertise:
-            adv_hosts = local_ipv4_addresses()
+            adv_hosts = advertise_hosts_for_settings()
+            if not adv_hosts:
+                from babblecast.network import is_babblecast_subnet_ip
+
+                adv_hosts = [ip for ip in local_ipv4_addresses() if is_babblecast_subnet_ip(ip)]
             if self.host not in ("0.0.0.0", "127.0.0.1") and self.host not in adv_hosts:
                 adv_hosts.insert(0, self.host)
-            self._advertiser = ServerAdvertiser(
-                self.server_name,
-                self.ws_port,
-                self.udp_port,
-                adv_hosts,
-                password_protected=self.password_protected,
-            )
-            self._advertiser.start()
+            if adv_hosts:
+                self._advertiser = ServerAdvertiser(
+                    self.server_name,
+                    self.ws_port,
+                    self.udp_port,
+                    adv_hosts,
+                    password_protected=self.password_protected,
+                )
+                self._advertiser.start()
+            else:
+                logger.warning(
+                    "No BabbleCast IP configured (11.2.9.x) — mDNS advertisement skipped"
+                )
         logger.info("BabbleCast hub listening ws=%s udp=%s", self.ws_port, self.udp_port)
 
     async def stop(self) -> None:

@@ -15,7 +15,7 @@ from babblecast.audio.codec import OpusCodec
 from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
-from babblecast.constants import FRAME_BYTES, composite_participant_key
+from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, FRAME_BYTES, composite_participant_key
 from babblecast.config import UserSettings, get_settings, save_settings
 from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id, parse_error_code
 
@@ -68,7 +68,7 @@ class ClientSession:
         self._udp_sock: socket.socket | None = None
         self._udp_thread: threading.Thread | None = None
         self._udp_port = 0
-        self._server_udp_port = 8766
+        self._server_udp_port = DEFAULT_UDP_PORT
         self._sequence = 0
         self._codec = OpusCodec()
         self._gate = NoiseGate(threshold_db=self._settings.gate_threshold_db)
@@ -76,7 +76,7 @@ class ClientSession:
         self._mic = None
         self._speaker = None
         self._host = ""
-        self._ws_port = 8765
+        self._ws_port = DEFAULT_WS_PORT
         self._password = ""
         self._server_name = ""
         self._user_disconnect = False
@@ -232,7 +232,7 @@ class ClientSession:
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_name = str(data.get("server_name", ""))
-            self._server_udp_port = int(data.get("udp_port", 8766))
+            self._server_udp_port = int(data.get("udp_port", DEFAULT_UDP_PORT))
             await self._send(
                 encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
             )
@@ -384,7 +384,7 @@ class ClientSession:
             if self._on_disconnected and not self._user_disconnect:
                 self._on_disconnected(disconnect_reason or "Connection closed")
 
-    def connect(self, host: str, ws_port: int = 8765, password: str = "") -> None:
+    def connect(self, host: str, ws_port: int = DEFAULT_WS_PORT, password: str = "") -> None:
         if self._running:
             self.disconnect()
         self._user_disconnect = False
