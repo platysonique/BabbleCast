@@ -29,18 +29,29 @@ def _jni():
     return autoclass
 
 
-def _java_byte_array(size: int):
-    """Allocate a Java byte[] for AudioRecord.read / AudioTrack.write."""
-    return _jni()("[B")(size)
+def _java_short_array(size: int):
+    """Java short[] — pyjnius can construct these; byte[] cannot (No constructor available)."""
+    return _jni()("[S")(size)
 
 
-def _copy_java_to_python(j_buf, n: int, py_buf: bytearray) -> None:
-    """pyjnius does not write AudioRecord results back into Python buffers."""
-    py_buf[:n] = j_buf[:n]
+def _short_array_to_numpy(j_buf, n: int) -> np.ndarray:
+    """Copy n samples from Java short[] into NumPy int16."""
+    if n <= 0:
+        return np.zeros(0, dtype=np.int16)
+    try:
+        return np.array(j_buf[:n], dtype=np.int16)
+    except Exception:
+        return np.fromiter((int(j_buf[i]) for i in range(n)), dtype=np.int16, count=n)
 
 
-def _copy_python_to_java(j_buf, data: bytes) -> None:
-    j_buf[: len(data)] = data
+def _numpy_to_short_array(j_buf, pcm: np.ndarray) -> None:
+    """Copy int16 PCM into Java short[] for AudioTrack.write."""
+    n = len(pcm)
+    try:
+        j_buf[:n] = pcm.tolist()
+    except Exception:
+        for i in range(n):
+            j_buf[i] = int(pcm[i])
 
 
 class AndroidMicCapture:
@@ -63,8 +74,7 @@ class AndroidMicCapture:
         self._thread: threading.Thread | None = None
         self._record = None
         self._read_j_buf = None
-        self._read_py_buf: bytearray | None = None
-        self._read_buf_size = 0
+        self._read_short_count = 0
         self._read_failures = 0
 
     @property
@@ -92,17 +102,16 @@ class AndroidMicCapture:
         self._input_volume = max(0.0, min(2.0, value))
 
     def _loop(self) -> None:
-        assert self._read_j_buf is not None and self._read_py_buf is not None
-        buf_size = self._read_buf_size
+        assert self._read_j_buf is not None
+        short_count = self._read_short_count
         while self._running:
-            n = int(self._record.read(self._read_j_buf, 0, buf_size))
+            n = int(self._record.read(self._read_j_buf, 0, short_count))
             if n <= 0:
                 self._read_failures += 1
                 if self._read_failures <= 5:
                     logger.warning("AudioRecord.read returned %d", n)
                 continue
-            _copy_java_to_python(self._read_j_buf, n, self._read_py_buf)
-            samples = np.frombuffer(memoryview(self._read_py_buf)[:n], dtype=np.int16)
+            samples = _short_array_to_numpy(self._read_j_buf, n)
             if len(samples) < FRAME_SAMPLES:
                 continue
             for i in range(0, len(samples) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
@@ -140,9 +149,8 @@ class AndroidMicCapture:
         )
         if self._record.getState() != 1:  # STATE_INITIALIZED
             raise RuntimeError("AudioRecord failed to initialize")
-        self._read_buf_size = min_buf * 2
-        self._read_j_buf = _java_byte_array(self._read_buf_size)
-        self._read_py_buf = bytearray(self._read_buf_size)
+        self._read_short_count = max(FRAME_SAMPLES, min_buf // 2)
+        self._read_j_buf = _java_short_array(self._read_short_count)
         self._read_failures = 0
         self._record.startRecording()
         self._running = True
@@ -170,7 +178,6 @@ class AndroidMicCapture:
                 pass
             self._record = None
         self._read_j_buf = None
-        self._read_py_buf = None
 
     def set_device(self, device_key: str | None) -> None:
         pass
@@ -201,7 +208,6 @@ class AndroidSpeakerOutput:
         self._write_failures = 0
         self._first_pcm_keys: set[str] = set()
         self._write_j_buf = None
-        self._write_j_buf_size = 0
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
@@ -250,18 +256,11 @@ class AndroidSpeakerOutput:
             mix[:n] += chunk[:n] * vol
         return np.clip(mix * self._master_volume, -1.0, 1.0)
 
-    def _ensure_write_buffer(self, out_len: int) -> None:
-        if self._write_j_buf is None or self._write_j_buf_size < out_len:
-            self._write_j_buf_size = max(out_len, FRAME_BYTES)
-            self._write_j_buf = _java_byte_array(self._write_j_buf_size)
-
     def _write_pcm(self, pcm: np.ndarray) -> None:
-        data = pcm.astype("<i2", copy=False).tobytes()
-        out_len = len(data)
-        self._ensure_write_buffer(out_len)
-        assert self._write_j_buf is not None
-        _copy_python_to_java(self._write_j_buf, data)
-        written = int(self._track.write(self._write_j_buf, 0, out_len))
+        if self._write_j_buf is None:
+            self._write_j_buf = _java_short_array(FRAME_SAMPLES)
+        _numpy_to_short_array(self._write_j_buf, pcm)
+        written = int(self._track.write(self._write_j_buf, 0, FRAME_SAMPLES))
         if written < 0:
             self._write_failures += 1
             if self._write_failures <= 5 or self._write_failures % 200 == 0:
@@ -269,7 +268,7 @@ class AndroidSpeakerOutput:
         elif written == 0:
             self._write_failures += 1
             if self._write_failures <= 3:
-                logger.warning("AudioTrack.write returned 0 bytes")
+                logger.warning("AudioTrack.write returned 0 samples")
 
     def _loop(self) -> None:
         next_tick = time.monotonic()
@@ -342,6 +341,7 @@ class AndroidSpeakerOutput:
         play_state = int(getattr(self._track, "getPlayState", lambda: 3)())
         if play_state != 3:  # PLAYSTATE_PLAYING
             logger.warning("AudioTrack not in PLAYING state after play(): %s", play_state)
+        self._write_j_buf = _java_short_array(FRAME_SAMPLES)
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()
@@ -365,7 +365,6 @@ class AndroidSpeakerOutput:
                 pass
             self._track = None
         self._write_j_buf = None
-        self._write_j_buf_size = 0
         get_android_router().shutdown()
 
     def set_device(self, device_key: str | None) -> None:

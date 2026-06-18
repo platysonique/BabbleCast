@@ -1,16 +1,23 @@
-"""Document pyjnius byte[] copy contract (regression guard for silent mic/speaker)."""
+"""Regression guards for pyjnius PCM buffers on Android."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
-def test_android_engine_uses_java_byte_array_copy_helpers() -> None:
-    """cast('byte[]', bytearray) does not sync AudioRecord reads back to Python."""
+def test_android_engine_uses_java_short_arrays_not_byte() -> None:
+    """byte[] has no constructor in p4a pyjnius; short[] is the supported path."""
     text = Path(__file__).resolve().parents[1].joinpath("babblecast/audio/android_engine.py").read_text(
         encoding="utf-8"
     )
-    assert "_java_byte_array" in text
-    assert "_copy_java_to_python" in text
-    assert "_copy_python_to_java" in text
+    assert "_java_short_array" in text
+    assert '"[S"' in text or "'[S'" in text
+    assert "_java_byte_array" not in text
     assert "cast(\"byte[]\"" not in text
+
+
+def test_bridge_android_audio_finish_is_zero_arg() -> None:
+    """Kivy Clock passes _dt; _defer_main_thread calls fn() with no args."""
+    text = Path(__file__).resolve().parents[1].joinpath("babblecast/client/bridge.py").read_text(encoding="utf-8")
+    assert "def _finish() -> None:" in text
+    assert "_defer_main_thread(0, _finish)" in text

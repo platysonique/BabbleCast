@@ -181,7 +181,7 @@ class BridgeManager:
             except Exception:
                 logger.exception("Android audio startup failed (background)")
             finally:
-                def _finish(_dt: float) -> None:
+                def _finish() -> None:
                     with self._audio_lock:
                         self._audio_starting = False
                     if not ok and self._on_error:
