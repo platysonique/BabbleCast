@@ -57,4 +57,4 @@ def room_password_admin_display(
     name = str(room_meta.get("name", "Room"))
     if remembered_password:
         return True, f"{name} password: {remembered_password}"
-    return True, f"{name}: 🔒 protected (password not stored on this device)"
+    return True, f"{name}: [locked] protected (password not stored on this device)"

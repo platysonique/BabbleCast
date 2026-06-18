@@ -81,10 +81,10 @@ class ParticipantDetailsDialog(QDialog):
             tap_btn = QPushButton("Tap")
             tap_btn.clicked.connect(self._do_tap)
             tap_row.addWidget(tap_btn)
-            if tapped:
-                chat_btn = QPushButton("Tap chat")
-                chat_btn.clicked.connect(self._do_tap_chat)
-                tap_row.addWidget(chat_btn)
+            chat_btn = QPushButton("Tap chat")
+            chat_btn.setToolTip("Open private tap chat (starts a tap automatically if needed)")
+            chat_btn.clicked.connect(self._do_tap_chat)
+            tap_row.addWidget(chat_btn)
             layout.addLayout(tap_row)
 
         saved = get_tap_store().all_for_peer(self._client_id)

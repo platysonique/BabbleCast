@@ -393,7 +393,7 @@ class DetailDrawer(QWidget):
         self._listen_mute_btn.setText("🔇" if muted else "🔊")
         self._listen_mute_btn.blockSignals(False)
         self._tap_btn.setVisible(not is_self)
-        self._tap_chat_btn.setVisible(not is_self and (tapped or tap_active))
+        self._sync_tap_chat_button(tapped=tapped, tap_active=tap_active, is_self=is_self)
         self._tech_label.setText("\n".join(tech_lines))
         self._refresh_tap_list(client_id)
         self._peer_block.setVisible(True)
@@ -436,9 +436,31 @@ class DetailDrawer(QWidget):
         return self._peer_link_id
 
     def set_tap_chat_visible(self, visible: bool) -> None:
+        """Enable Tap chat when a tap session exists (button stays visible)."""
         if not self._peer_block.isVisible() or self._peer_is_self:
             return
-        self._tap_chat_btn.setVisible(visible)
+        self._tap_chat_btn.setVisible(True)
+        self._tap_chat_btn.setEnabled(visible)
+
+    def update_tap_chat_state(self, *, tapped: bool, tap_active: bool) -> None:
+        if not self._peer_block.isVisible():
+            return
+        self._sync_tap_chat_button(
+            tapped=tapped,
+            tap_active=tap_active,
+            is_self=self._peer_is_self,
+        )
+
+    def _sync_tap_chat_button(self, *, tapped: bool, tap_active: bool, is_self: bool) -> None:
+        del tapped, tap_active
+        if is_self:
+            self._tap_chat_btn.setVisible(False)
+            return
+        self._tap_chat_btn.setVisible(True)
+        self._tap_chat_btn.setEnabled(True)
+        self._tap_chat_btn.setToolTip(
+            "Open private tap chat (starts a tap automatically if needed)"
+        )
 
     def refresh_tap_notes(self) -> None:
         if self._peer_client_id:

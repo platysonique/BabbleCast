@@ -6,7 +6,6 @@ import logging
 import queue
 import threading
 import time
-import time
 from collections.abc import Callable
 
 import numpy as np
@@ -24,6 +23,19 @@ from babblecast.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _close_stream_async(stream) -> None:
+    """PortAudio stop/close can block; never call that on the Qt UI thread."""
+
+    def _worker() -> None:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            logger.debug("Async PortAudio stream close failed", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="bbc-audio-close").start()
 
 
 class MicCapture:
@@ -135,6 +147,18 @@ class MicCapture:
             self._stream = None
         with self._lock:
             self._buffer = np.zeros(0, dtype=np.int16)
+
+    def stop_fast(self) -> None:
+        """Silence callbacks and close the stream on a background thread (app exit)."""
+        with self._lock:
+            self._enabled = False
+            self._on_level = None
+        stream = self._stream
+        self._stream = None
+        with self._lock:
+            self._buffer = np.zeros(0, dtype=np.int16)
+        if stream is not None:
+            _close_stream_async(stream)
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key
@@ -281,6 +305,15 @@ class SpeakerOutput:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+    def stop_fast(self) -> None:
+        """Stop mixing callbacks and close the stream on a background thread (app exit)."""
+        self._running = False
+        self._worker = None
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            _close_stream_async(stream)
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key

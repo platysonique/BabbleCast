@@ -350,7 +350,7 @@ class SideDetailPanel(MDBoxLayout):
         s = self._controller.settings
         self._load_settings(s)
         self._panel_expanded = bool(s.ui_panel_expanded)
-        self._self_section.set_expanded(bool(s.ui_self_audio_expanded))
+        self._self_section.set_expanded(bool(s.ui_self_audio_expanded), notify=False)
         self._toggle.icon = "chevron-left" if self._panel_expanded else "chevron-right"
         self._apply_width(animated=False)
 
@@ -421,9 +421,8 @@ class SideDetailPanel(MDBoxLayout):
         self._peer_meter.set_level(float(participant.get("voice_level", 0)))
         self._tap_btn.disabled = is_self
         self._tap_btn.opacity = 0.35 if is_self else 1
-        show_tap_chat = (tap_active or tapped) and not is_self
-        self._tap_chat_btn.disabled = not show_tap_chat
-        self._tap_chat_btn.opacity = 1 if show_tap_chat else 0.35
+        self._tap_chat_btn.disabled = is_self
+        self._tap_chat_btn.opacity = 0.35 if is_self else 1
         self._tech_label.text = (
             f"client_id: {self._peer_client_id}\nlink: {link_id}\nserver: {server}\n"
             f"composite: {composite}\nvoice: {float(participant.get('voice_level', 0)):.3f}\n"
@@ -492,10 +491,13 @@ class SideDetailPanel(MDBoxLayout):
             self._controller.set_peer_volume(self._peer_key, value / 100.0)
 
     def set_tap_chat_visible(self, visible: bool) -> None:
+        del visible
         if not self._peer_open or not self._peer_client_id:
             return
-        self._tap_chat_btn.disabled = not visible
-        self._tap_chat_btn.opacity = 1 if visible else 0.35
+        if self._tap_btn.disabled:
+            return
+        self._tap_chat_btn.disabled = False
+        self._tap_chat_btn.opacity = 1
 
     def _add_tap_note(self) -> None:
         if self._peer_link_id and self._peer_client_id:
@@ -507,7 +509,7 @@ class SideDetailPanel(MDBoxLayout):
 
     def _tap_chat(self) -> None:
         if self._peer_link_id and self._peer_client_id:
-            self._controller.open_tap_for_peer(self._peer_link_id, self._peer_client_id)
+            self._controller.open_tap_chat_for_peer(self._peer_link_id, self._peer_client_id)
 
     def _refresh_taps(self) -> None:
         from kivymd.uix.button import MDFlatButton, MDIconButton

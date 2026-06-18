@@ -77,7 +77,10 @@ class AndroidMicCapture:
         buf_size = FRAME_SAMPLES * 4
         data = bytearray(buf_size)
         while self._running:
-            n = self._record.read(data, 0, buf_size)
+            from jnius import cast
+
+            jbuf = cast("byte[]", data)
+            n = int(self._record.read(jbuf, 0, buf_size))
             if n <= 0:
                 continue
             samples = np.frombuffer(bytes(data[:n]), dtype=np.int16)
@@ -170,6 +173,8 @@ class AndroidSpeakerOutput:
         self._running = False
         self._thread: threading.Thread | None = None
         self._route = normalize_audio_route(None)
+        self._write_failures = 0
+        self._first_pcm_keys: set[str] = set()
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
@@ -190,6 +195,9 @@ class AndroidSpeakerOutput:
             return
         if self._participant_muted.get(client_id, False):
             return
+        if client_id not in self._first_pcm_keys:
+            self._first_pcm_keys.add(client_id)
+            logger.info("Android speaker received first voice frame for %s", client_id)
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX))
         try:
@@ -215,13 +223,27 @@ class AndroidSpeakerOutput:
             mix[:n] += chunk[:n] * vol
         return np.clip(mix * self._master_volume, -1.0, 1.0)
 
+    def _write_pcm(self, pcm: np.ndarray) -> None:
+        from jnius import cast
+
+        data = pcm.astype("<i2", copy=False).tobytes()
+        jdata = cast("byte[]", bytearray(data))
+        written = int(self._track.write(jdata, 0, len(data)))
+        if written < 0:
+            self._write_failures += 1
+            if self._write_failures <= 5 or self._write_failures % 200 == 0:
+                logger.warning("AudioTrack.write failed (%s): %d", self._write_failures, written)
+        elif written == 0:
+            self._write_failures += 1
+            if self._write_failures <= 3:
+                logger.warning("AudioTrack.write returned 0 bytes")
+
     def _loop(self) -> None:
-        pcm = np.zeros(FRAME_SAMPLES, dtype=np.int16)
         next_tick = time.monotonic()
         while self._running:
             frame = self._mix()
             pcm = (frame * 32767.0).astype(np.int16)
-            self._track.write(pcm.tobytes(), 0, len(pcm) * 2)
+            self._write_pcm(pcm)
             next_tick += FRAME_DURATION_SEC
             sleep_for = next_tick - time.monotonic()
             if sleep_for > 0:
@@ -232,11 +254,14 @@ class AndroidSpeakerOutput:
     def _create_track(self, autoclass, AudioFormat, AudioTrack, min_buf: int):
         """Prefer AudioAttributes (VoIP) over legacy STREAM_VOICE_CALL → earpiece."""
         try:
-            attrs_builder = autoclass("android.media.AudioAttributes").Builder()
-            attrs_builder.setUsage(autoclass("android.media.AudioAttributes").USAGE_VOICE_COMMUNICATION)
-            attrs_builder.setContentType(autoclass("android.media.AudioAttributes").CONTENT_TYPE_SPEECH)
+            AudioAttributes = autoclass("android.media.AudioAttributes")
+            AudioAttributesBuilder = autoclass("android.media.AudioAttributes$Builder")
+            AudioFormatBuilder = autoclass("android.media.AudioFormat$Builder")
+            attrs_builder = AudioAttributesBuilder()
+            attrs_builder.setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            attrs_builder.setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             attrs = attrs_builder.build()
-            fmt_builder = AudioFormat.Builder()
+            fmt_builder = AudioFormatBuilder()
             fmt_builder.setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             fmt_builder.setSampleRate(SAMPLE_RATE)
             fmt_builder.setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
@@ -276,7 +301,14 @@ class AndroidSpeakerOutput:
         if min_buf <= 0:
             raise RuntimeError(f"AudioTrack.getMinBufferSize failed: {min_buf}")
         self._track = self._create_track(autoclass, AudioFormat, AudioTrack, min_buf)
+        try:
+            self._track.setVolume(1.0)
+        except Exception:
+            logger.debug("AudioTrack.setVolume unavailable", exc_info=True)
         self._track.play()
+        play_state = int(getattr(self._track, "getPlayState", lambda: 3)())
+        if play_state != 3:  # PLAYSTATE_PLAYING
+            logger.warning("AudioTrack not in PLAYING state after play(): %s", play_state)
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()

@@ -393,18 +393,24 @@ class ServerDiscovery:
         )
         self._scan_thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
+        """Stop discovery threads. Use wait=False during app exit to avoid UI freezes."""
         if not self._running:
             return
         self._running = False
         self._on_update = None
         self._stop_event.set()
+        if not wait:
+            self._thread = None
+            self._prune_thread = None
+            self._scan_thread = None
+            return
         if self._thread:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=2)
             self._thread = None
         if self._prune_thread:
-            self._prune_thread.join(timeout=5)
+            self._prune_thread.join(timeout=1)
             self._prune_thread = None
         if self._scan_thread:
-            self._scan_thread.join(timeout=60)
+            self._scan_thread.join(timeout=2)
             self._scan_thread = None

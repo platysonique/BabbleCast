@@ -50,6 +50,7 @@ class ClientSession:
         *,
         link_id: str = "",
         bridge_speaker: Any | None = None,
+        bridge_managed: bool = False,
         listen_muted_getter: Callable[[], bool] | None = None,
     ) -> None:
         self._on_presence = on_presence
@@ -66,6 +67,7 @@ class ClientSession:
         self._on_tap_end = on_tap_end
         self._link_id = link_id
         self._bridge_speaker = bridge_speaker
+        self._bridge_managed = bridge_managed or bool(link_id and bridge_speaker is not None)
         self._listen_muted_getter = listen_muted_getter
         self._bridge_mic_muted = False
         self._settings = get_settings()
@@ -164,7 +166,10 @@ class ClientSession:
 
     @property
     def is_bridge(self) -> bool:
-        return bool(self._link_id and self._bridge_speaker is not None)
+        return bool(self._link_id and self._bridge_managed)
+
+    def set_bridge_speaker(self, speaker: Any | None) -> None:
+        self._bridge_speaker = speaker
 
     def set_bridge_mic_muted(self, muted: bool) -> None:
         self._bridge_mic_muted = muted
@@ -497,10 +502,24 @@ class ClientSession:
         self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
         self._thread.start()
 
-    def disconnect(self, *, notify: bool = True) -> None:
+    def disconnect(self, *, notify: bool = True, fast: bool = False) -> None:
         if not self._running and not self._thread:
             return
         self._user_disconnect = True
+        if fast:
+            self._running = False
+            self._ws_closing = True
+            self._stop_audio()
+            if self._udp_sock:
+                try:
+                    self._udp_sock.close()
+                except OSError:
+                    pass
+                self._udp_sock = None
+            with self._jitter_lock:
+                self._jitter.clear()
+            self._thread = None
+            return
         self._shutdown_transport()
         if self._thread:
             self._thread.join(timeout=3)

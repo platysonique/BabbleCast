@@ -7,9 +7,10 @@ import socket
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -146,6 +147,7 @@ class MainWindow(QMainWindow):
         self._servers: list[DiscoveredServer] = []
         self._tap_ids: dict[tuple[str, str], str] = {}
         self._tap_dialogs: dict[tuple[str, str], TapChatDialog] = {}
+        self._pending_tap_chat_open: set[tuple[str, str]] = set()
         self._peer_participant_data: dict[str, dict] = {}
         self._peer_names: dict[tuple[str, str], str] = {}
         self._room_by_link: dict[str, tuple[str, str]] = {}
@@ -276,7 +278,7 @@ class MainWindow(QMainWindow):
             on_peer_volume=self._bridge.set_participant_volume,
             on_peer_listen_mute=self._bridge.set_participant_muted,
             on_peer_tap=self._send_tap,
-            on_peer_tap_chat=self._open_tap_for_peer,
+            on_peer_tap_chat=self.open_tap_chat_for_peer,
             on_reopen_tap=self._reinsert_saved_tap,
             on_add_tap_note=self._add_tap_note_for_peer,
             on_delete_tap_note=self._delete_tap_note,
@@ -1010,13 +1012,25 @@ class MainWindow(QMainWindow):
             self._tap_ids[(link_id, peer_id)] = tap_id
             self._peer_names[(link_id, peer_id)] = peer_name
             composite = composite_participant_key(link_id, peer_id)
-            if self._drawer.is_peer_open(composite):
-                self._drawer.set_tap_chat_visible(True)
+            pending = (link_id, peer_id)
+            if pending in self._pending_tap_chat_open:
+                self._pending_tap_chat_open.discard(pending)
+                self._open_tap_for_peer(link_id, peer_id)
+            elif self._drawer.is_peer_open(composite):
+                self._drawer.update_tap_chat_state(tapped=True, tap_active=True)
         if not data.get("self_sent"):
             self._rebuild_participants()
             link = self._bridge.get_link(link_id)
             if link:
                 self._status.setText(f"Tap from {from_name} on {link.label} — click their name")
+
+    def open_tap_chat_for_peer(self, link_id: str, peer_id: str) -> None:
+        """Open tap chat immediately — start a tap first if no session exists yet."""
+        if self._tap_ids.get((link_id, peer_id)):
+            self._open_tap_for_peer(link_id, peer_id)
+            return
+        self._pending_tap_chat_open.add((link_id, peer_id))
+        self._bridge.send_tap(link_id, peer_id)
 
     def _open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
         tap_id = self._tap_ids.get((link_id, peer_id))
@@ -1066,7 +1080,18 @@ class MainWindow(QMainWindow):
         for tap_key in list(self._tap_ids):
             if self._tap_ids.get(tap_key) == tap_id:
                 self._tap_ids.pop(tap_key, None)
+                self._pending_tap_chat_open.discard(tap_key)
         self._refresh_tap_notes_ui()
+
+    def _refresh_open_peer_tap_ui(self) -> None:
+        if not self._drawer.has_open_peer():
+            return
+        link_id = self._drawer.peer_link_id
+        client_id = self._drawer.peer_client_id
+        link = self._bridge.get_link(link_id)
+        tapped = bool(link and client_id in link.pending_taps)
+        tap_active = (link_id, client_id) in self._tap_ids
+        self._drawer.update_tap_chat_state(tapped=tapped, tap_active=tap_active)
 
     def _view_tap_note(self, save_id: str) -> None:
         tap = get_tap_store().get(save_id)
@@ -1167,18 +1192,45 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(event)
 
     def closeEvent(self, event) -> None:
+        if self._closing:
+            event.accept()
+            return
+        event.accept()
         self._closing = True
+        self.hide()
+
         geo = self.geometry()
         self._settings.window_geometry = [geo.x(), geo.y(), geo.width(), geo.height()]
         save_settings(self._settings)
+
         for dlg in list(self._tap_dialogs.values()):
-            dlg.close()
+            dlg._suppress_close_prompt = True
+            dlg.hide()
+            dlg.deleteLater()
         self._tap_dialogs.clear()
         self._ui.blockSignals(True)
-        self._discovery.stop()
-        if self._embedded:
-            if self._embedded.running:
-                self._embedded.stop()
-            self._embedded = None
-        self._bridge.shutdown()
+
+        discovery = self._discovery
+        embedded = self._embedded
+        bridge = self._bridge
+        self._embedded = None
+
         super().closeEvent(event)
+        QTimer.singleShot(
+            0,
+            lambda d=discovery, e=embedded, b=bridge: _shutdown_and_quit(d, e, b),
+        )
+
+
+def _shutdown_and_quit(
+    discovery: ServerDiscovery,
+    embedded: EmbeddedServer | None,
+    bridge: BridgeManager,
+) -> None:
+    discovery.stop(wait=False)
+    if embedded and embedded.running:
+        embedded.stop(wait=False)
+    bridge.shutdown()
+    app = QApplication.instance()
+    if app is not None:
+        app.quit()

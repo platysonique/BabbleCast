@@ -32,7 +32,7 @@ def _android_wifi_network():
             return None
         from jnius import autoclass
 
-        if "Context" not in _cache:
+        if "ConnectivityManager" not in _cache:
             _cache["Context"] = autoclass("android.content.Context")
             _cache["ConnectivityManager"] = autoclass("android.net.ConnectivityManager")
             _cache["InetSocketAddress"] = autoclass("java.net.InetSocketAddress")
@@ -73,6 +73,8 @@ def port_open_on_wifi(ip: str, port: int, timeout: float) -> bool | None:
     """Try TCP connect on the Wi‑Fi network (not VPN). Returns None if unavailable."""
     wifi_net = _android_wifi_network()
     if wifi_net is None:
+        return None
+    if "JavaSocket" not in _cache or "InetSocketAddress" not in _cache:
         return None
     try:
         JavaSocket = _cache["JavaSocket"]

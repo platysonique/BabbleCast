@@ -48,6 +48,7 @@ class TapChatDialog(QDialog):
         self._peer_name = peer_name
         self._server_label = server_label
         self._messages: list[dict] = []
+        self._suppress_close_prompt = False
         self._note_added = False
         self._on_delete_tap_note = on_delete_tap_note
         self._on_notes_changed = on_notes_changed
@@ -190,7 +191,13 @@ class TapChatDialog(QDialog):
             self._on_notes_changed()
 
     def closeEvent(self, event) -> None:
-        if not self._note_added and self._messages:
+        show_prompt = (
+            not self._suppress_close_prompt
+            and not self._bridge.shutting_down
+            and not self._note_added
+            and bool(self._messages)
+        )
+        if show_prompt:
             settings = get_settings()
             if not settings.skip_tap_note_save_confirm:
                 dlg = ConfirmCheckboxDialog(

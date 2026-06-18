@@ -65,7 +65,7 @@ class CollapsibleSection(MDBoxLayout):
     def is_expanded(self) -> bool:
         return self._expanded
 
-    def set_expanded(self, expanded: bool) -> None:
+    def set_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         if self._expanded == expanded:
             return
         self._expanded = expanded
@@ -77,7 +77,7 @@ class CollapsibleSection(MDBoxLayout):
         else:
             self._body.height = 0
         self._on_body_resize()
-        if self._on_toggle:
+        if self._on_toggle and notify:
             self._on_toggle(expanded)
 
     def toggle(self) -> None:

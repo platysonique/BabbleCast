@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivymd.app import MDApp
 from kivymd.uix.boxlayout import MDBoxLayout
+from kivymd.uix.button import MDFlatButton, MDRaisedButton
 from kivymd.uix.card import MDCard
 from kivymd.uix.screen import MDScreen
 
 from babblecast.client.bridge import BridgeManager
 from babblecast.config import get_settings
 from babblecast.constants import DEFAULT_WS_PORT
-from mobile.theme import ACCENT, BG, DANGER, MUTED, MUTE_ORANGE, SUCCESS, SUNFLOWER, SURFACE, TEXT
+from mobile.branding import banner_widget
+from mobile.platform_ui import is_android
+from mobile.theme import ACCENT, BG, DANGER, MUTED, MUTE_ORANGE, SUCCESS, SURFACE, TEXT
 
 class ConnectScreen(MDScreen):
     display_name = StringProperty("")
@@ -36,10 +40,9 @@ class ConnectScreen(MDScreen):
         root = MDBoxLayout(orientation="vertical", md_bg_color=BG, padding=dp(16), spacing=dp(12))
         from kivymd.uix.label import MDLabel
         from kivymd.uix.textfield import MDTextField
-        from kivymd.uix.button import MDRaisedButton, MDFlatButton
         from kivy.uix.scrollview import ScrollView
 
-        header = MDLabel(text="BabbleCast", font_style="H4", theme_text_color="Custom", text_color=ACCENT)
+        header = banner_widget(height_dp=72)
         sub = MDLabel(
             text="Tap a server or enter IP — you'll set your name when you connect",
             theme_text_color="Custom",
@@ -190,11 +193,11 @@ class PersonNameRow(MDBoxLayout):
         from kivymd.uix.label import MDLabel
 
         self._led = MDLabel(
-            text="●",
+            text="*",
             theme_text_color="Custom",
             text_color=MUTED,
             size_hint_x=None,
-            width=dp(16),
+            width=dp(14),
             halign="center",
         )
         self.set_speaking(speaking)
@@ -211,6 +214,7 @@ class PersonNameRow(MDBoxLayout):
 
     def set_speaking(self, speaking: bool) -> None:
         self._led.text_color = SUCCESS if speaking else MUTED
+        self._led.text = ">" if speaking else "*"
 
     def on_touch_up(self, touch):
         if self.collide_point(*touch.pos):
@@ -235,10 +239,8 @@ class LiveScreen(MDScreen):
         super().__init__(**kwargs)
         self._link_items: dict[str, Any] = {}
         from kivy.uix.boxlayout import BoxLayout
-        from kivymd.uix.button import MDIconButton
         from kivymd.uix.label import MDLabel
         from kivymd.uix.textfield import MDTextField
-        from kivymd.uix.button import MDRaisedButton
         from kivy.uix.scrollview import ScrollView
         from mobile.detail_panel import SideDetailPanel
 
@@ -255,7 +257,15 @@ class LiveScreen(MDScreen):
         )
         self.bind(status_text=lambda _s, v: setattr(self._status, "text", v))
 
-        self._connected_box = MDBoxLayout(orientation="horizontal", spacing=dp(4), size_hint_y=None, height=dp(44))
+        self._server_hint = MDLabel(
+            text="Hear = listen to server · Talk = send mic · Leave = disconnect",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            font_style="Caption",
+            size_hint_y=None,
+            height=dp(28),
+        )
+        self._connected_box = MDBoxLayout(orientation="horizontal", spacing=dp(4), size_hint_y=None, height=dp(48))
         self._current_room = MDLabel(
             text=self.current_room_text,
             theme_text_color="Custom",
@@ -265,6 +275,20 @@ class LiveScreen(MDScreen):
             height=dp(20),
         )
         self.bind(current_room_text=lambda _s, v: setattr(self._current_room, "text", v))
+
+        self._room_pwd_label = None
+        self._self_meter = None
+        if is_android():
+            self._room_pwd_label = MDLabel(
+                text="",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+                height=0,
+                opacity=0,
+            )
+
         room_create = MDBoxLayout(spacing=dp(4), size_hint_y=None, height=dp(40))
         self._new_room_field = MDTextField(
             hint_text="New room",
@@ -279,6 +303,14 @@ class LiveScreen(MDScreen):
 
         self._people_box = MDBoxLayout(orientation="vertical", spacing=dp(2), size_hint_y=None)
         self._people_box.bind(minimum_height=self._people_box.setter("height"))
+        self._people_hint = MDLabel(
+            text="Double-tap a name for person controls (Tap, volume, etc.)",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            font_style="Caption",
+            size_hint_y=None,
+            height=dp(22),
+        )
         people_scroll = ScrollView(size_hint_y=None, height=dp(72))
         people_scroll.add_widget(self._people_box)
 
@@ -312,10 +344,13 @@ class LiveScreen(MDScreen):
 
         for w in (
             self._status,
+            self._server_hint,
             self._connected_box,
             self._current_room,
+            *([self._room_pwd_label] if self._room_pwd_label is not None else []),
             room_create,
             self._rooms_box,
+            self._people_hint,
             people_scroll,
             chat_scroll,
             chat_row,
@@ -324,7 +359,9 @@ class LiveScreen(MDScreen):
 
         app_stub = MDApp.get_running_app()
         controller = getattr(app_stub, "controller", None)
-        self.detail_panel = SideDetailPanel(controller) if controller else None
+        self.detail_panel = None
+        if controller and not is_android():
+            self.detail_panel = SideDetailPanel(controller)
         outer.add_widget(main)
         if self.detail_panel:
             outer.add_widget(self.detail_panel)
@@ -334,7 +371,7 @@ class LiveScreen(MDScreen):
         app = MDApp.get_running_app()
         if not hasattr(app, "controller"):
             return
-        if self.detail_panel is None:
+        if not is_android() and self.detail_panel is None:
             from kivy.uix.boxlayout import BoxLayout
             from mobile.detail_panel import SideDetailPanel
 
@@ -342,9 +379,17 @@ class LiveScreen(MDScreen):
             if isinstance(outer, BoxLayout):
                 self.detail_panel = SideDetailPanel(app.controller)
                 outer.add_widget(self.detail_panel)
-        elif hasattr(self.detail_panel, "_controller"):
+        elif self.detail_panel is not None and hasattr(self.detail_panel, "_controller"):
             self.detail_panel._controller = app.controller
         app.controller.on_live_enter()
+
+    def set_room_password_display(self, visible: bool, text: str) -> None:
+        label = getattr(self, "_room_pwd_label", None)
+        if label is None:
+            return
+        label.text = text if visible else ""
+        label.opacity = 1 if visible else 0
+        label.height = dp(18) if visible else 0
 
     def _sync_mute_button(self, *_args) -> None:
         if not hasattr(self, "_mute_btn"):
@@ -439,8 +484,8 @@ class LiveScreen(MDScreen):
             name = str(r.get("name", "Room"))
             count = int(r.get("member_count", 0))
             is_current = rid == current_room_id
-            lock = "🔒 " if r.get("password_protected") else ""
-            label_text = f"▸ {lock}{name} ({count})" if is_current else f"{lock}{name} ({count})"
+            lock = "[locked] " if r.get("password_protected") else ""
+            label_text = f"> {lock}{name} ({count})" if is_current else f"{lock}{name} ({count})"
             row = MDCard(
                 padding=dp(6),
                 size_hint_x=None,
@@ -507,9 +552,13 @@ class LiveScreen(MDScreen):
         if link_id in self._link_items:
             self.refresh_link_row(link_id, link)
             return
-        from kivymd.uix.button import MDIconButton, MDRaisedButton
-
         from babblecast.client.link_stats import link_display_name
+
+        def _hear_text(muted: bool) -> str:
+            return "Hear (off)" if muted else "Hear"
+
+        def _talk_text(muted: bool) -> str:
+            return "Talk (off)" if muted else "Talk"
 
         row = MDBoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         card = MDCard(
@@ -535,32 +584,36 @@ class LiveScreen(MDScreen):
             if hasattr(app, "controller"):
                 app.controller.show_server_info(link_id)
 
-        info = MDIconButton(
-            icon="information-outline",
+        info = MDFlatButton(
+            text="Info",
             theme_text_color="Custom",
             text_color=MUTED,
             size_hint_x=None,
-            width=dp(36),
+            width=dp(44),
             on_release=show_info,
         )
         listen = MDRaisedButton(
-            icon="volume-off" if link.listen_muted else "volume-high",
+            text=_hear_text(link.listen_muted),
             md_bg_color=DANGER if link.listen_muted else SUCCESS,
             size_hint_x=None,
-            width=dp(48),
+            width=dp(58),
+            font_size=dp(11),
             on_release=lambda *_: self._listen(link_id),
         )
         mic = MDRaisedButton(
-            icon="microphone-off" if link.mic_muted else "microphone",
+            text=_talk_text(link.mic_muted),
             md_bg_color=DANGER if link.mic_muted else SUCCESS,
             size_hint_x=None,
-            width=dp(48),
+            width=dp(58),
+            font_size=dp(11),
             on_release=lambda *_: self._mic(link_id),
         )
-        disc = MDIconButton(
-            icon="close",
+        disc = MDFlatButton(
+            text="Leave",
             theme_text_color="Custom",
-            text_color=(0.97, 0.46, 0.56, 1),
+            text_color=DANGER,
+            size_hint_x=None,
+            width=dp(52),
             on_release=lambda *_: self._disconnect(link_id),
         )
         row.add_widget(card)
@@ -580,9 +633,9 @@ class LiveScreen(MDScreen):
         name_lbl = item.get("name")
         if name_lbl is not None:
             name_lbl.text = link_display_name(link)
-        item["listen"].icon = "volume-off" if link.listen_muted else "volume-high"
+        item["listen"].text = "Hear (off)" if link.listen_muted else "Hear"
         item["listen"].md_bg_color = DANGER if link.listen_muted else SUCCESS
-        item["mic"].icon = "microphone-off" if link.mic_muted else "microphone"
+        item["mic"].text = "Talk (off)" if link.mic_muted else "Talk"
         item["mic"].md_bg_color = DANGER if link.mic_muted else SUCCESS
 
     def set_active_link(self, link_id: str) -> None:
@@ -670,6 +723,8 @@ class LiveScreen(MDScreen):
 class SettingsScreen(MDScreen):
     gate_db = NumericProperty(-40)
     noise_pct = NumericProperty(50)
+    master_pct = NumericProperty(100)
+    mic_pct = NumericProperty(100)
 
     def on_enter(self, *_args) -> None:
         app = MDApp.get_running_app()
@@ -677,42 +732,228 @@ class SettingsScreen(MDScreen):
         s = app.controller.settings
         self.gate_db = int(s.gate_threshold_db)
         self.noise_pct = int(s.noise_suppression * 100)
+        self.master_pct = int(s.output_volume * 100)
+        self.mic_pct = int(s.input_volume * 100)
+        if hasattr(self, "_gate_slider"):
+            self._gate_slider.value = self.gate_db
+            self._noise_slider.value = self.noise_pct
+            self._master_slider.value = self.master_pct
+            self._mic_slider.value = self.mic_pct
+        if hasattr(self, "_route_buttons"):
+            app = MDApp.get_running_app()
+            if is_android() and hasattr(app, "controller") and not self._route_buttons:
+                self._build_route_buttons(app.controller)
+            elif hasattr(app, "controller"):
+                self._refresh_route_ui(app.controller)
+        app = MDApp.get_running_app()
+        if is_android() and hasattr(app, "controller"):
+            app.controller.ensure_self_audio_meter()
+
+    def set_self_mic_level(self, level: float) -> None:
+        meter = getattr(self, "_self_meter", None)
+        if meter is not None:
+            meter.set_level(level)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        root = MDBoxLayout(orientation="vertical", md_bg_color=BG, padding=dp(16), spacing=dp(16))
+        from kivy.uix.scrollview import ScrollView
         from kivymd.uix.label import MDLabel
         from kivymd.uix.slider import MDSlider
+        from kivymd.uix.textfield import MDTextField
+
+        outer = MDBoxLayout(orientation="vertical", md_bg_color=BG, padding=dp(16), spacing=dp(8))
+        scroll = ScrollView(size_hint=(1, 1))
+        root = MDBoxLayout(orientation="vertical", spacing=dp(14), size_hint_y=None, padding=(0, dp(4)))
+        root.bind(minimum_height=root.setter("height"))
 
         root.add_widget(
-            MDLabel(text="Audio", font_style="H5", theme_text_color="Custom", text_color=ACCENT)
+            MDLabel(text="Settings", font_style="H4", theme_text_color="Custom", text_color=ACCENT, size_hint_y=None)
+        )
+        root.add_widget(
+            MDLabel(
+                text="Audio and host options live here on mobile — not on the Live side strip.",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+            )
+        )
+
+        root.add_widget(
+            MDLabel(text="Audio output", font_style="H6", theme_text_color="Custom", text_color=TEXT, size_hint_y=None)
+        )
+
+        self._route_row = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
+        self._route_label = None
+        self._route_buttons: dict[str, MDFlatButton] = {}
+        if is_android():
+            self._route_label = MDLabel(
+                text="Output route: Speaker",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+                height=dp(20),
+            )
+            btn_row = MDBoxLayout(spacing=dp(4), size_hint_y=None, height=dp(36))
+            self._route_row.add_widget(self._route_label)
+            self._route_row.add_widget(btn_row)
+            self._route_btn_row = btn_row
+            root.add_widget(self._route_row)
+        else:
+            root.add_widget(
+                MDLabel(
+                    text="Output route selection is available on Android only.",
+                    theme_text_color="Custom",
+                    text_color=MUTED,
+                    font_style="Caption",
+                    size_hint_y=None,
+                )
+            )
+
+        self._master_label = MDLabel(
+            text="Master volume: 100%",
+            theme_text_color="Custom",
+            text_color=TEXT,
+            size_hint_y=None,
+        )
+        self._master_slider = MDSlider(min=0, max=200, value=100, step=1)
+        self._master_slider.bind(value=lambda _s, v: self._master_changed(v))
+        root.add_widget(self._master_label)
+        root.add_widget(self._master_slider)
+
+        root.add_widget(
+            MDLabel(text="Microphone input", font_style="H6", theme_text_color="Custom", text_color=TEXT, size_hint_y=None)
+        )
+        from mobile.vertical_meter import METER_HEIGHT, VerticalMeter
+
+        mic_meter_row = MDBoxLayout(size_hint_y=None, height=METER_HEIGHT + dp(8), spacing=dp(8))
+        self._self_meter = VerticalMeter()
+        mic_col = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_x=0.72)
+        self._mic_label = MDLabel(
+            text="Mic volume: 100%",
+            theme_text_color="Custom",
+            text_color=TEXT,
+            size_hint_y=None,
+        )
+        self._mic_slider = MDSlider(min=0, max=200, value=100, step=1)
+        self._mic_slider.bind(value=lambda _s, v: self._mic_changed(v))
+        mic_col.add_widget(self._mic_label)
+        mic_col.add_widget(self._mic_slider)
+        mic_meter_row.add_widget(self._self_meter)
+        mic_meter_row.add_widget(mic_col)
+        root.add_widget(mic_meter_row)
+
+        root.add_widget(
+            MDLabel(text="Processing", font_style="H6", theme_text_color="Custom", text_color=TEXT, size_hint_y=None)
         )
         self._gate_label = MDLabel(
             text="Noise gate: -40 dB",
             theme_text_color="Custom",
             text_color=TEXT,
+            size_hint_y=None,
         )
-        gate_slider = MDSlider(min=-80, max=0, value=-40, step=1)
-        gate_slider.bind(value=lambda _s, v: self._gate_changed(v))
+        self._gate_slider = MDSlider(min=-80, max=0, value=-40, step=1)
+        self._gate_slider.bind(value=lambda _s, v: self._gate_changed(v))
         root.add_widget(self._gate_label)
-        root.add_widget(gate_slider)
+        root.add_widget(self._gate_slider)
         self._noise_label = MDLabel(
             text="Noise suppression: 50%",
             theme_text_color="Custom",
             text_color=TEXT,
+            size_hint_y=None,
         )
-        noise_slider = MDSlider(min=0, max=100, value=50, step=1)
-        noise_slider.bind(value=lambda _s, v: self._noise_changed(v))
+        self._noise_slider = MDSlider(min=0, max=100, value=50, step=1)
+        self._noise_slider.bind(value=lambda _s, v: self._noise_changed(v))
         root.add_widget(self._noise_label)
-        root.add_widget(noise_slider)
-        hint = MDLabel(
-            text="Gate and suppression match desktop. Suppression uses a built-in expander on Android.",
-            theme_text_color="Custom",
-            text_color=MUTED,
-            font_style="Caption",
+        root.add_widget(self._noise_slider)
+        root.add_widget(
+            MDLabel(
+                text="Suppression uses a built-in expander on Android (noisereduce optional on desktop).",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+            )
         )
-        root.add_widget(hint)
-        self.add_widget(root)
+
+        root.add_widget(
+            MDLabel(text="Host admin", font_style="H6", theme_text_color="Custom", text_color=TEXT, size_hint_y=None)
+        )
+        root.add_widget(
+            MDLabel(
+                text="Personal host password — required to delete rooms created by others.",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+            )
+        )
+        self._host_pwd_field = MDTextField(
+            hint_text="Host password",
+            password=True,
+            size_hint_y=None,
+            height=dp(48),
+        )
+        save_host = MDRaisedButton(text="Save host password", size_hint_y=None, height=dp(44), on_release=lambda *_: self._save_host_password())
+        root.add_widget(self._host_pwd_field)
+        root.add_widget(save_host)
+
+        scroll.add_widget(root)
+        outer.add_widget(scroll)
+        self.add_widget(outer)
+
+        if is_android():
+            app = MDApp.get_running_app()
+            if hasattr(app, "controller"):
+                self._build_route_buttons(app.controller)
+
+    def _build_route_buttons(self, controller) -> None:
+        if not hasattr(self, "_route_btn_row"):
+            return
+        self._route_btn_row.clear_widgets()
+        self._route_buttons.clear()
+        for route_id, label, _enabled in controller.list_audio_routes():
+            btn = MDFlatButton(
+                text=label,
+                size_hint_x=0.25,
+                on_release=lambda _b, rid=route_id: self._route_pressed(rid),
+            )
+            self._route_buttons[route_id] = btn
+            self._route_btn_row.add_widget(btn)
+        self._refresh_route_ui(controller)
+
+    def _refresh_route_ui(self, controller) -> None:
+        if not self._route_buttons:
+            return
+        s = controller.settings
+        selected = getattr(s, "android_audio_route", "speaker")
+        labels = {rid: label for rid, label, _ in controller.list_audio_routes()}
+        if self._route_label:
+            self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
+        available = {rid: ok for rid, _lbl, ok in controller.list_audio_routes()}
+        for route_id, btn in self._route_buttons.items():
+            enabled = available.get(route_id, route_id != "bluetooth")
+            btn.disabled = not enabled
+            btn.text_color = ACCENT if route_id == selected else MUTED
+
+    def _route_pressed(self, route_id: str) -> None:
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.set_audio_route(route_id)
+        self._refresh_route_ui(app.controller)
+
+    def _master_changed(self, value: float) -> None:
+        self._master_label.text = f"Master volume: {int(value)}%"
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.set_master_volume(value / 100.0)
+
+    def _mic_changed(self, value: float) -> None:
+        self._mic_label.text = f"Mic volume: {int(value)}%"
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.set_input_volume(value / 100.0)
 
     def _gate_changed(self, value: float) -> None:
         self._gate_label.text = f"Noise gate: {int(value)} dB"
@@ -725,4 +966,13 @@ class SettingsScreen(MDScreen):
         app = MDApp.get_running_app()
         assert hasattr(app, "controller")
         app.controller.set_noise_suppression(value / 100.0)
+
+    def _save_host_password(self) -> None:
+        pwd = self._host_pwd_field.text.strip()
+        if not pwd:
+            return
+        app = MDApp.get_running_app()
+        assert hasattr(app, "controller")
+        app.controller.set_host_password(pwd)
+        self._host_pwd_field.text = ""
 

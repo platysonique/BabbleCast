@@ -92,7 +92,7 @@ def prompt_connect(
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        Clock.schedule_once(lambda _dt, n=name, p=pwd: on_ok(n, p), 0)
+        Clock.schedule_once(lambda _dt, n=name, p=pwd: on_ok(n, p), 0.05)
 
     dialog = MDDialog(
         title="Connect to server",
@@ -178,7 +178,7 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
         settings.display_name = name
         save_settings(settings)
         dismiss()
-        Clock.schedule_once(lambda _dt, s=server, n=name, p=pwd: on_ok(s, n, p), 0)
+        Clock.schedule_once(lambda _dt, s=server, n=name, p=pwd: on_ok(s, n, p), 0.05)
 
     dialog = MDDialog(
         title="Host server",

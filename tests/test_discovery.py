@@ -83,6 +83,17 @@ def test_discovery_handler_accepts_zeroconf_keyword() -> None:
     )
 
 
+def test_discovery_stop_without_wait_returns_immediately() -> None:
+    from babblecast.discovery import ServerDiscovery
+
+    disc = ServerDiscovery(on_update=lambda _s: None)
+    disc.start()
+    started = time.time()
+    disc.stop(wait=False)
+    elapsed = time.time() - started
+    assert elapsed < 0.5
+
+
 def test_discovery_removed_drops_server() -> None:
     import time
 

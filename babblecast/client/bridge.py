@@ -25,6 +25,19 @@ from babblecast.room_secrets import (
 logger = logging.getLogger(__name__)
 
 
+def _defer_main_thread(delay: float, fn: Callable[[], None]) -> None:
+    """Run on the UI thread after delay (Kivy on Android; immediate on desktop)."""
+    try:
+        from kivy.clock import Clock
+
+        Clock.schedule_once(lambda _dt: fn(), delay)
+    except ImportError:
+        if delay <= 0:
+            fn()
+        else:
+            threading.Timer(delay, fn).start()
+
+
 @dataclass
 class ServerLinkState:
     link_id: str
@@ -91,6 +104,8 @@ class BridgeManager:
         self._mic = None
         self._speaker = None
         self._audio_started = False
+        self._audio_starting = False
+        self._audio_lock = threading.Lock()
         self._global_muted = False
         self._global_ptt = False
         self._monitoring_requested = False
@@ -121,10 +136,10 @@ class BridgeManager:
         for link_id in list(self._sessions.keys()):
             session = self._sessions.pop(link_id, None)
             if session:
-                session.disconnect(notify=False)
+                session.disconnect(notify=False, fast=True)
         with self._lock:
             self._links.clear()
-        self._teardown_audio()
+        self._teardown_audio(fast=True)
 
     @property
     def links(self) -> list[ServerLinkState]:
@@ -137,8 +152,52 @@ class BridgeManager:
     def get_session(self, link_id: str) -> ClientSession | None:
         return self._sessions.get(link_id)
 
+    def _attach_bridge_speaker_to_sessions(self) -> None:
+        speaker = self._speaker
+        if not speaker:
+            return
+        for session in self._sessions.values():
+            session.set_bridge_speaker(speaker)
+
     def _ensure_audio(self) -> bool:
         """Start shared mic/speaker. Returns False if hardware could not open."""
+        if self._shutting_down or self._audio_started:
+            return self._audio_started
+        if platform_name() == "android":
+            self._start_android_audio_async()
+            return True
+        return self._ensure_audio_sync()
+
+    def _start_android_audio_async(self) -> None:
+        with self._audio_lock:
+            if self._audio_started or self._audio_starting or self._shutting_down:
+                return
+            self._audio_starting = True
+
+        def _worker() -> None:
+            ok = False
+            try:
+                ok = self._ensure_audio_sync()
+            except Exception:
+                logger.exception("Android audio startup failed (background)")
+            finally:
+                def _finish(_dt: float) -> None:
+                    with self._audio_lock:
+                        self._audio_starting = False
+                    if not ok and self._on_error:
+                        for link_id in list(self._sessions.keys()):
+                            self._on_error(
+                                link_id,
+                                "Audio unavailable — connected for chat only; check speakers/mic",
+                                None,
+                            )
+
+                _defer_main_thread(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True, name="bbc-android-audio").start()
+
+    def _ensure_audio_sync(self) -> bool:
+        """Blocking mic/speaker open — never call on the Kivy UI thread on Android."""
         if self._shutting_down or self._audio_started:
             return self._audio_started
         self._mic = create_mic(
@@ -165,12 +224,9 @@ class BridgeManager:
                 )
 
                 initial_route = normalize_audio_route(self._settings.android_audio_route)
-                if get_android_router().bluetooth_available():
-                    initial_route = AUDIO_ROUTE_BLUETOOTH
+                if initial_route == AUDIO_ROUTE_BLUETOOTH and not get_android_router().bluetooth_available():
+                    initial_route = AUDIO_ROUTE_SPEAKER
                 self._speaker.start(route=initial_route)
-                if initial_route == AUDIO_ROUTE_BLUETOOTH:
-                    self._settings.android_audio_route = AUDIO_ROUTE_BLUETOOTH
-                    save_settings(self._settings)
             else:
                 self._speaker.start()
             self._mic.set_input_volume(self._settings.input_volume)
@@ -180,6 +236,7 @@ class BridgeManager:
             self._teardown_audio()
             return False
         self._audio_started = True
+        self._attach_bridge_speaker_to_sessions()
         if platform_name() == "android":
             self._start_android_bt_watch()
         return True
@@ -200,20 +257,26 @@ class BridgeManager:
             except RuntimeError:
                 pass
 
-    def _teardown_audio(self) -> None:
+    def _teardown_audio(self, *, fast: bool = False) -> None:
         if platform_name() == "android":
             from babblecast.audio.android_bt_watch import stop_bluetooth_watch
 
             stop_bluetooth_watch()
         if self._mic:
             try:
-                self._mic.stop(teardown=True)
+                if fast and hasattr(self._mic, "stop_fast"):
+                    self._mic.stop_fast()
+                else:
+                    self._mic.stop(teardown=True)
             except Exception:
                 logger.exception("Mic teardown failed")
             self._mic = None
         if self._speaker:
             try:
-                self._speaker.stop()
+                if fast and hasattr(self._speaker, "stop_fast"):
+                    self._speaker.stop_fast()
+                else:
+                    self._speaker.stop()
             except Exception:
                 logger.exception("Speaker teardown failed")
             self._speaker = None
@@ -301,6 +364,7 @@ class BridgeManager:
 
         session = ClientSession(
             link_id=link_id,
+            bridge_managed=True,
             bridge_speaker=self._speaker,
             on_presence=lambda rid, p, lid=link_id: self._on_presence and self._on_presence(lid, rid, p),
             on_chat=lambda d, lid=link_id: self._on_chat and self._on_chat(lid, d),
@@ -315,19 +379,22 @@ class BridgeManager:
             on_tap_open=lambda tid, lid=link_id: self._handle_tap_open(lid, tid),
             on_tap_end=lambda tid, lid=link_id: self._handle_tap_end(lid, tid),
             listen_muted_getter=lambda lid=link_id: (
-                self._links[lid].listen_muted if lid in self._links else True
+                self._links[lid].listen_muted if lid in self._links else False
             ),
         )
         self._sessions[link_id] = session
-        if not self._ensure_audio():
+        session.update_settings(self._settings)
+        session.connect(host, port, password=password, server_operator=server_operator)
+        if platform_name() == "android":
+            logger.info("Starting Android audio async for %s:%s", host, port)
+            self._ensure_audio()
+        elif not self._ensure_audio():
             if self._on_error:
                 self._on_error(
                     link_id,
                     "Audio unavailable — connected for chat only; check speakers/mic",
                     None,
                 )
-        session.update_settings(self._settings)
-        session.connect(host, port, password=password, server_operator=server_operator)
         return link_id
 
     def is_server_operator(self, link_id: str) -> bool:

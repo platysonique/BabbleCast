@@ -102,7 +102,7 @@ class EmbeddedServer:
         if self._hub:
             self._hub.set_host_password(password)
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         if not self._thread:
             return
         self._on_started = None
@@ -113,6 +113,7 @@ class EmbeddedServer:
                 self._loop.stop()
 
             self._loop.call_soon_threadsafe(_request_stop)
-        self._thread.join(timeout=10)
+        if wait:
+            self._thread.join(timeout=2)
         self._thread = None
         self._running = False

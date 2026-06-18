@@ -85,6 +85,7 @@ class BabbleController:
         self._presence: dict[str, list] = {}
         self._rooms: dict[str, list] = {}
         self._tap_ids: dict[tuple[str, str], str] = {}
+        self._pending_tap_chat_open: set[tuple[str, str]] = set()
         self._tap_messages: list[dict] = []
         self._tap_dialog: MDDialog | None = None
         self._tap_link_id = ""
@@ -330,20 +331,21 @@ class BabbleController:
         save_settings(self._settings)
         self._bridge.update_settings(self._settings)
         self.set_status(f"Connecting {host}:{port}…")
+        logger.info("connect_selected: switch to Live then connect %s:%s", host, port)
         self.app.switch_tab("live")
 
         def _finish_connect(_dt: float) -> None:
             if not self._alive():
                 return
+            logger.info("connect_selected: bridge.connect %s:%s", host, port)
             self._bridge.connect(
                 host,
                 port,
                 password=password,
                 server_operator=self._is_own_server(host, port) or is_local_host(host),
             )
-            self._sync_input_monitoring()
 
-        Clock.schedule_once(_finish_connect, 0)
+        Clock.schedule_once(_finish_connect, 0.05)
 
     def host_server(self) -> None:
         if self._embedded and self._embedded.running:
@@ -407,6 +409,9 @@ class BabbleController:
         if not (self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded):
             self._bridge.release_input_monitoring()
             return
+        if self._bridge.links and getattr(self._bridge, "_audio_starting", False):
+            Clock.schedule_once(lambda _dt: self._sync_input_monitoring(), 0.25)
+            return
         if not record_audio_granted():
             self.set_status("Grant microphone permission for self-audio meters")
             request_android_permissions()
@@ -434,15 +439,31 @@ class BabbleController:
         if panel:
             panel.sync_from_settings()
         self._refresh_admin_room_password()
-        self._sync_input_monitoring()
+        Clock.schedule_once(lambda _dt: self._sync_input_monitoring(), 0.3)
         self.refresh_tap_notes_ui()
 
     def _on_local_mic_level(self, level: float) -> None:
         if not self._alive():
             return
         live = self.app.screen("live")
-        if live and getattr(live, "detail_panel", None):
-            live.detail_panel.set_self_mic_level(level)
+        panel = getattr(live, "detail_panel", None)
+        if panel:
+            panel.set_self_mic_level(level)
+        settings = self.app.screen("settings")
+        set_level = getattr(settings, "set_self_mic_level", None)
+        if callable(set_level):
+            set_level(level)
+
+    def ensure_self_audio_meter(self) -> None:
+        """Open mic monitoring on Android Settings so the level meter works."""
+        from mobile.platform_ui import is_android
+
+        if not is_android():
+            return
+        if not record_audio_granted():
+            request_android_permissions()
+            return
+        self._bridge.ensure_input_monitoring()
 
     def _on_audio_route_changed(self, route: str) -> None:
         if not self._alive():
@@ -451,19 +472,40 @@ class BabbleController:
         panel = getattr(live, "detail_panel", None)
         if panel:
             panel.sync_from_settings()
+            return
+        from mobile.platform_ui import is_android
+
+        if is_android():
+            settings = self.app.screen("settings")
+            if hasattr(settings, "_refresh_route_ui"):
+                settings._refresh_route_ui(self)
 
     def open_user_panel(self, link_id: str, participant: dict) -> None:
         from babblecast.constants import composite_participant_key
+        from mobile.platform_ui import is_android
 
         cid = str(participant.get("client_id", ""))
         composite = composite_participant_key(link_id, cid)
         link = self._bridge.get_link(link_id)
         my_id = link.client_id if link else ""
+        tap_active = (link_id, cid) in self._tap_ids
+        tapped = bool(link and cid in link.pending_taps)
+
+        if is_android():
+            from mobile.peer_dialog import open_peer_dialog
+
+            open_peer_dialog(
+                self,
+                link_id,
+                participant,
+                tap_active=tap_active,
+                tapped=tapped,
+            )
+            return
+
         live = self.app.screen("live")
         if not getattr(live, "detail_panel", None):
             return
-        tap_active = (link_id, cid) in self._tap_ids
-        tapped = bool(link and cid in link.pending_taps)
         live.detail_panel.toggle_peer(
             composite,
             participant,
@@ -475,15 +517,21 @@ class BabbleController:
         )
 
     def open_tap_for_peer(self, link_id: str, peer_id: str) -> None:
-        tap_id = self._tap_ids.get((link_id, peer_id))
-        if not tap_id:
-            return
-        from babblecast.constants import composite_participant_key
+        self.open_tap_chat_for_peer(link_id, peer_id)
 
-        composite = composite_participant_key(link_id, peer_id)
-        p = self._participant_by_composite.get(composite, {})
-        peer_name = str(p.get("name", peer_id))
-        self._open_tap_dialog(link_id, tap_id, peer_id, peer_name)
+    def open_tap_chat_for_peer(self, link_id: str, peer_id: str) -> None:
+        """Open tap chat — start a tap first if no session exists yet."""
+        tap_id = self._tap_ids.get((link_id, peer_id))
+        if tap_id:
+            from babblecast.constants import composite_participant_key
+
+            composite = composite_participant_key(link_id, peer_id)
+            p = self._participant_by_composite.get(composite, {})
+            peer_name = str(p.get("name", peer_id))
+            self._open_tap_dialog(link_id, tap_id, peer_id, peer_name)
+            return
+        self._pending_tap_chat_open.add((link_id, peer_id))
+        self._bridge.send_tap(link_id, peer_id)
 
     def reinsert_saved_tap(self, link_id: str, save_id: str) -> None:
         tap = get_tap_store().get(save_id)
@@ -683,14 +731,19 @@ class BabbleController:
     def _refresh_admin_room_password(self) -> None:
         live = self.app.screen("live")
         panel = getattr(live, "detail_panel", None)
-        if not panel:
-            return
+        set_live = getattr(live, "set_room_password_display", None)
         link_id = self._active_link_id
         if not link_id:
-            panel.set_room_password_display(False, "")
+            if panel:
+                panel.set_room_password_display(False, "")
+            if callable(set_live):
+                set_live(False, "")
             return
         visible, text = self._bridge.admin_room_password_display(link_id)
-        panel.set_room_password_display(visible, text)
+        if panel:
+            panel.set_room_password_display(visible, text)
+        if callable(set_live):
+            set_live(visible, text)
 
     def _current_room_id(self, link_id: str) -> str:
         session = self._bridge.get_session(link_id)
@@ -1174,8 +1227,13 @@ class BabbleController:
         target_id = str(data.get("target_id", ""))
         target_name = str(data.get("target_name", ""))
         peer_id = target_id if data.get("self_sent") else from_id
+        peer_name = target_name if data.get("self_sent") else from_name
         if tap_id and peer_id:
             self._tap_ids[(link_id, peer_id)] = tap_id
+            pending = (link_id, peer_id)
+            if pending in self._pending_tap_chat_open:
+                self._pending_tap_chat_open.discard(pending)
+                self._open_tap_dialog(link_id, tap_id, peer_id, peer_name)
             live = self.app.screen("live")
             panel = getattr(live, "detail_panel", None)
             if panel and panel._peer_open and panel._peer_client_id == peer_id:
@@ -1414,6 +1472,7 @@ class BabbleController:
         for key in list(self._tap_ids):
             if self._tap_ids.get(key) == tap_id:
                 self._tap_ids.pop(key, None)
+                self._pending_tap_chat_open.discard(key)
         if self._tap_dialog and self._tap_id == tap_id and self._tap_link_id == link_id:
             self._tap_dialog.dismiss()
             self._tap_dialog = None

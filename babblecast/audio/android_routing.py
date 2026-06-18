@@ -71,6 +71,7 @@ class AndroidAudioRouter:
             return None
 
     def bluetooth_available(self) -> bool:
+        """True when an HFP/SCO headset is connected — not A2DP-only (media) devices."""
         am = self._get_manager()
         if am is None:
             return False
@@ -87,23 +88,10 @@ class AndroidAudioRouter:
             if adapter is None or not adapter.isEnabled():
                 return False
             connected = int(BluetoothProfile.STATE_CONNECTED)
-            for profile in (
-                BluetoothProfile.HEADSET,
-                BluetoothProfile.A2DP,
-                BluetoothProfile.HEARING_AID,
-            ):
-                try:
-                    if int(adapter.getProfileConnectionState(profile)) == connected:
-                        return True
-                except Exception:
-                    continue
-            return False
+            return int(adapter.getProfileConnectionState(BluetoothProfile.HEADSET)) == connected
         except Exception:
-            logger.debug("Bluetooth connection check failed", exc_info=True)
-            try:
-                return bool(am.isBluetoothA2dpOn())
-            except Exception:
-                return False
+            logger.debug("Bluetooth HFP connection check failed", exc_info=True)
+            return False
 
     def list_routes(self) -> list[tuple[str, str, bool]]:
         """Return (route_id, label, enabled) for UI."""
@@ -125,6 +113,40 @@ class AndroidAudioRouter:
             logger.debug("Bluetooth SCO stop failed", exc_info=True)
         self._sco_active = False
 
+    def _apply_communication_device(self, am, route: str) -> bool:
+        """Android 12+ VoIP routing via setCommunicationDevice (Samsung 14/15 reliable path)."""
+        try:
+            autoclass = _jni()
+            Version = autoclass("android.os.Build$VERSION")
+            if int(Version.SDK_INT) < 31:
+                return False
+            AudioDeviceInfo = autoclass("android.media.AudioDeviceInfo")
+            if route == AUDIO_ROUTE_AUTO:
+                am.clearCommunicationDevice()
+                return True
+            preferred_types: list[int] = []
+            if route == AUDIO_ROUTE_SPEAKER:
+                preferred_types = [int(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)]
+            elif route == AUDIO_ROUTE_EARPIECE:
+                preferred_types = [int(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)]
+            elif route == AUDIO_ROUTE_BLUETOOTH:
+                preferred_types = [
+                    int(AudioDeviceInfo.TYPE_BLUETOOTH_SCO),
+                    int(getattr(AudioDeviceInfo, "TYPE_BLE_HEADSET", 26)),
+                ]
+            devices = am.getAvailableCommunicationDevices()
+            if not devices:
+                return False
+            for dtype in preferred_types:
+                for device in devices:
+                    if int(device.getType()) == dtype and bool(am.setCommunicationDevice(device)):
+                        logger.info("Android communication device set (type=%s route=%s)", dtype, route)
+                        return True
+            return False
+        except Exception:
+            logger.debug("setCommunicationDevice unavailable; using legacy routing", exc_info=True)
+            return False
+
     def apply(
         self,
         route: str,
@@ -141,28 +163,33 @@ class AndroidAudioRouter:
             try:
                 AudioManager = _jni()("android.media.AudioManager")
                 am.setMode(AudioManager.MODE_IN_COMMUNICATION)
+                used_modern = self._apply_communication_device(am, route)
                 if route == AUDIO_ROUTE_SPEAKER:
                     self._stop_sco(am)
-                    am.setSpeakerphoneOn(True)
+                    if not used_modern:
+                        am.setSpeakerphoneOn(True)
                 elif route == AUDIO_ROUTE_EARPIECE:
                     self._stop_sco(am)
-                    am.setSpeakerphoneOn(False)
+                    if not used_modern:
+                        am.setSpeakerphoneOn(False)
                 elif route == AUDIO_ROUTE_BLUETOOTH:
-                    am.setSpeakerphoneOn(False)
-                    am.startBluetoothSco()
-                    am.setBluetoothScoOn(True)
-                    self._sco_active = True
+                    if not used_modern:
+                        am.setSpeakerphoneOn(False)
+                        am.startBluetoothSco()
+                        am.setBluetoothScoOn(True)
+                        self._sco_active = True
                 else:  # auto — wired/BT/system default without forcing speaker
                     self._stop_sco(am)
-                    am.setSpeakerphoneOn(False)
-                logger.info("Android audio route → %s", route)
+                    if not used_modern:
+                        am.setSpeakerphoneOn(False)
+                logger.info("Android audio route → %s (modern=%s)", route, used_modern)
             except Exception:
                 logger.exception("Failed to apply Android audio route %s", route)
                 return route
 
         if route == AUDIO_ROUTE_BLUETOOTH and mic_restart_cb is not None:
             # SCO connects asynchronously; restart mic so BT headset input is picked up.
-            for delay in (0.35, 0.9):
+            for delay in (0.35, 0.9, 1.8):
                 threading.Timer(delay, mic_restart_cb).start()
         return route
 
