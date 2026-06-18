@@ -174,7 +174,7 @@ Set `_running = True` before spawning the UDP thread.
 
 ## Linux: immediate Opus `silk/resampler` abort on launch
 
-**Status:** Open  
+**Status:** Fixed (2026-06-17)  
 **Reported:** 2026-06-17 (Pop!_OS 24.04, Python 3.12, post–PortAudio-fix builds)  
 **Affects:** Client launch (`bbc`) — process aborts before or without a useful Python traceback
 
@@ -220,56 +220,32 @@ Relevant code: `babblecast/audio/codec.py` (`OpusCodec`), `babblecast/client/ses
 - Defer starting the voice/encode loop until both mic and speaker streams are confirmed open.
 - Catch native abort paths by validating PCM length in Python before every `opuslib` call.
 
+### Fix
+
+- `babblecast/audio/codec.py` — pad/validate PCM; reject short packets; PLC returns silence on error.
+- Audio startup defers voice until speaker/mic streams open; failed startup tears down without encoding.
+
 ---
 
 ## Linux: `QMouseEvent` has no attribute `globalPos` (participant right-click)
 
-**Status:** Open  
+**Status:** Fixed (2026-06-17)  
 **Reported:** 2026-06-17 (Pop!_OS 24.04, PyQt6 6.11)  
-**Affects:** Desktop client — right-click participant name for saved Taps menu (`babblecast/client/qt/participant_widget.py`)
+**Affects:** Desktop client — was right-click participant name for saved Taps menu
 
 ### Symptom
 
-Right-clicking a participant name crashes the client.
+Right-clicking a participant name crashed the client on PyQt6.
 
-### Traceback
+### Fix
 
-```
-papaya@pop-os:~$ bbc
-Traceback (most recent call last):
-  File "/home/papaya/Projects/BabbleCast/babblecast/client/qt/participant_widget.py", line 82, in _on_name_click
-    self._show_saved_taps_menu(event.globalPos())
-                               ^^^^^^^^^^^^^^^
-AttributeError: 'QMouseEvent' object has no attribute 'globalPos'
-Aborted (core dumped)
-```
-
-### Cause
-
-PyQt6 removed `QMouseEvent.globalPos()` in favor of `globalPosition()` (returns `QPointF`). Code still calls the Qt5 API.
-
-Relevant code:
-
-```python
-def _on_name_click(self, event) -> None:
-    ...
-    elif event.button() == Qt.MouseButton.RightButton:
-        self._show_saved_taps_menu(event.globalPos())  # ← fails on PyQt6
-```
-
-### Workaround
-
-Avoid right-clicking participant names until fixed. Use the **Tap** button for tap actions instead.
-
-### Proposed fix
-
-Replace `event.globalPos()` with `event.globalPosition().toPoint()` (or pass `QPointF` directly to `QMenu.exec` if supported).
+Participant rows now use **double-click** to open the detail drawer; right-click menu removed. Use **Tap** from the drawer instead.
 
 ---
 
 ## Linux: mic switch fails on ALSA hardware device (`PaErrorCode -9985`)
 
-**Status:** Open (investigated 2026-06-17)  
+**Status:** Partially fixed (2026-06-17)  
 **Reported:** 2026-06-17 (Pop!_OS 24.04, Python 3.12, PortAudio ALSA host API)  
 **Affects:** Desktop client — changing **Input mic** in the audio drawer while connected or monitoring (`MicCapture.set_device` via `BridgeManager.set_input_device` / `ClientSession.set_input_device`)
 
@@ -367,4 +343,33 @@ After device 12 fails, `MicCapture.start()` **silently falls back** to the next 
 - Prefer virtual routes (`default` / `pipewire` / `pulse`) in the dropdown or mark raw hw nodes as advanced.
 - Optional delay or retry after `stop()` before opening new device; or use PipeWire-native device selection when available.
 - Consider opening only devices that match the active host route rather than arbitrary hw indices during hot-swap.
+
+### Fix applied (2026-06-17)
+
+- `MicCapture.stop(teardown=False)` no longer clears `_enabled` / `_on_level` during hot-swap; `start()` sets `_enabled = True` after open.
+- Brief settle delay (50 ms) after stop before reopen on device change.
+- Full teardown paths (`bridge` / `session` shutdown) call `stop(teardown=True)`.
+
+Remaining: UI feedback when preferred hw device fails; prefer `default`/`pipewire` in device list labels.
+
+---
+
+## LAN discovery: virtual `11.2.x.x` addresses not reachable on physical network
+
+**Status:** Fixed (2026-06-17)  
+**Affects:** mDNS advertisement + subnet scan fallback (`babblecast/discovery.py`, `babblecast/network_scan.py`)
+
+### Symptom
+
+Phone or other client could not discover a hosted PC; scan found nothing.
+
+### Cause
+
+mDNS A records and fallback scan targeted virtual BabbleCast IPs (`11.2.9.x`), which are not routable on a normal home LAN. Server listens on `0.0.0.0` with real `192.168.x.x` (etc.) addresses.
+
+### Fix
+
+- mDNS advertises **real LAN IPv4** in A records; virtual BabbleCast IP in `bbc` property.
+- Fallback scan probes local **/24 subnets** for port 9513 every 15 s.
+- Manual connect accepts LAN IPs in addition to `11.2.x.x` and `*.babblecast.local`.
 

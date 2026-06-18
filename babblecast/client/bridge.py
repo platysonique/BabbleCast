@@ -154,7 +154,7 @@ class BridgeManager:
 
     def _teardown_audio(self) -> None:
         if self._mic:
-            self._mic.stop()
+            self._mic.stop(teardown=True)
             self._mic = None
         if self._speaker:
             self._speaker.stop()

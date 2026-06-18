@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -104,6 +105,7 @@ class MicCapture:
                     callback=self._callback,
                 )
                 self._stream.start()
+                self._enabled = True
                 logger.info("Mic capture started on device index %s (shared/non-exclusive)", device)
                 return
             except sd.PortAudioError as exc:
@@ -114,10 +116,11 @@ class MicCapture:
             raise last_error
         raise sd.PortAudioError("No input audio device available")
 
-    def stop(self) -> None:
+    def stop(self, *, teardown: bool = False) -> None:
         with self._lock:
-            self._enabled = False
-            self._on_level = None
+            if teardown:
+                self._enabled = False
+                self._on_level = None
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -127,9 +130,9 @@ class MicCapture:
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key
-        was_running = self._stream is not None
-        if was_running:
+        if self._stream is not None:
             self.stop()
+            time.sleep(0.05)
             self.start()
 
 

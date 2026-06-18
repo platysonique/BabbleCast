@@ -300,7 +300,7 @@ class ClientSession:
         except Exception as exc:
             logger.exception("Failed to start audio devices")
             if self._mic:
-                self._mic.stop()
+                self._mic.stop(teardown=True)
             if self._speaker:
                 self._speaker.stop()
             self._audio_started = False
@@ -311,7 +311,7 @@ class ClientSession:
         if self.is_bridge:
             return
         if self._mic:
-            self._mic.stop()
+            self._mic.stop(teardown=True)
         if self._speaker:
             self._speaker.stop()
         self._audio_started = False
