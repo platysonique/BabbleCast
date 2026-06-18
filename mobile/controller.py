@@ -124,7 +124,7 @@ class BabbleController:
         request_android_permissions()
         acquire_multicast_lock()
         self._discovery.start()
-        self._apply_servers(self._discovery.servers)
+        self.refresh_discovery_ui(force=True)
         screen = self.app.screen("connect")
         if location_granted():
             screen.set_discovery_status(
@@ -145,7 +145,10 @@ class BabbleController:
             return
         if location_granted():
             acquire_multicast_lock()
-            self._apply_servers(self._discovery.servers)
+            if getattr(self.app, "_screen_manager", None) and self.app._screen_manager.current == "connect":
+                self.refresh_discovery_ui()
+            else:
+                self._apply_servers(self._discovery.servers)
 
     def stop_all(self) -> None:
         self._closing = True
@@ -179,12 +182,33 @@ class BabbleController:
         self._last_server_signature = signature
         screen = self.app.screen("connect")
         screen.update_servers(servers)
-        if servers:
-            screen.set_discovery_status(f"{len(servers)} server(s) on your network — tap one to connect")
+        self._set_discovery_status(len(servers))
+
+    def _set_discovery_status(self, count: int) -> None:
+        screen = self.app.screen("connect")
+        if count:
+            screen.set_discovery_status(f"{count} server(s) on your network — tap one to connect")
         elif location_granted():
             screen.set_discovery_status(
                 "No servers yet — scanning your network, or enter a LAN IP below"
             )
+        else:
+            screen.set_discovery_status(
+                "Grant Location for auto-discover, or enter a LAN IP below"
+            )
+
+    def refresh_discovery_ui(self, *, force: bool = False) -> None:
+        """Re-acquire mDNS lock and repaint Connect tab server list."""
+        if not self._alive():
+            return
+        acquire_multicast_lock()
+        if force:
+            self._last_server_signature = None
+            screen = self.app.screen("connect")
+            if hasattr(screen, "_server_signature"):
+                screen._server_signature = None
+        self._discovery.bump()
+        self._set_discovery_status(len(self._discovery.servers))
 
     def _password_required_for(self, host: str, port: int) -> bool:
         host = host.strip().lower()

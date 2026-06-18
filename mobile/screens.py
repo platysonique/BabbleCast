@@ -25,8 +25,11 @@ class ConnectScreen(MDScreen):
         assert hasattr(app, "controller")
         if not getattr(app, "controller", None):
             return
-        self.display_name = app.controller.settings.display_name or "Mobile"
+        from mobile.display_name import default_display_name
+
+        self.display_name = default_display_name(app.controller.settings)
         app.controller.refresh_host_ui()
+        app.controller.refresh_discovery_ui(force=True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

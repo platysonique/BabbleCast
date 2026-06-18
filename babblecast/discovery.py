@@ -305,6 +305,10 @@ class ServerDiscovery:
                 changed = True
         return changed
 
+    def bump(self) -> None:
+        """Push the current server list to listeners (e.g. after UI tab change)."""
+        self._emit()
+
     def _scan_loop(self) -> None:
         """UDP beacon + mesh TCP probe for servers mDNS cannot reach across subnets."""
         while not self._stop_event.is_set():

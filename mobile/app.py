@@ -77,3 +77,7 @@ class BabbleCastMobileApp(MDApp):
         except Exception:
             pass
         return True
+
+    def on_resume(self) -> None:
+        if hasattr(self, "controller"):
+            self.controller.refresh_discovery_ui(force=True)
