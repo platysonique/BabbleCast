@@ -219,6 +219,7 @@ class BridgeManager:
             if platform_name() == "android":
                 from babblecast.audio.android_routing import (
                     AUDIO_ROUTE_BLUETOOTH,
+                    AUDIO_ROUTE_SPEAKER,
                     get_android_router,
                     normalize_audio_route,
                 )
