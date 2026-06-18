@@ -124,9 +124,9 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
     protect_row = MDBoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(4))
     protect_cb = MDCheckbox(size_hint=(None, None), size=(dp(32), dp(32)))
     protect_row.add_widget(protect_cb)
-    protect_row.add_widget(MDLabel(text="Password protect", size_hint_x=1))
+    protect_row.add_widget(MDLabel(text="Host password", size_hint_x=1))
     password_field = MDTextField(
-        hint_text="Password for clients",
+        hint_text="Your password — guests need it to join; you need it for admin",
         password=True,
         disabled=True,
         size_hint_y=None,
@@ -169,7 +169,7 @@ def prompt_host(on_ok: Callable[[str, str, str], None]) -> None:
         name = _clean_name(name_field.text)
         pwd = password_field.text if protect_cb.active else ""
         if protect_cb.active and not pwd.strip():
-            _set_error(error_label, "Enter a password or turn off protection.")
+            _set_error(error_label, "Enter a host password or turn off protection.")
             return
         _set_error(error_label, "")
         settings.hosted_server_name = server
@@ -305,6 +305,59 @@ def prompt_room_password(
         buttons=[
             MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
             MDRaisedButton(text="Join", on_release=accept),
+        ],
+    )
+    holder.append(dialog)
+    password_field.bind(on_text_validate=accept)
+    dialog.open()
+
+
+def prompt_host_password(
+    on_ok: Callable[[str], None],
+    *,
+    title: str = "Host password",
+    hint: str = "Your host password",
+) -> None:
+    password_field = MDTextField(
+        hint_text=hint,
+        password=True,
+        size_hint_y=None,
+        height=dp(48),
+    )
+    error_label = _error_label()
+    body = MDBoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, adaptive_height=True)
+    body.add_widget(
+        MDLabel(
+            text="Enter the password you set when hosting this server.",
+            theme_text_color="Custom",
+            text_color=(0.6, 0.65, 0.75, 1),
+            font_style="Caption",
+            size_hint_y=None,
+        )
+    )
+    body.add_widget(password_field)
+    body.add_widget(error_label)
+    holder: list[MDDialog] = []
+
+    def dismiss() -> None:
+        holder[0].dismiss()
+
+    def accept(*_args) -> None:
+        pwd = password_field.text.strip()
+        if not pwd:
+            _set_error(error_label, "Enter your host password.")
+            return
+        _set_error(error_label, "")
+        dismiss()
+        on_ok(pwd)
+
+    dialog = MDDialog(
+        title=title,
+        type="custom",
+        content_cls=body,
+        buttons=[
+            MDFlatButton(text="Cancel", on_release=lambda *_: dismiss()),
+            MDRaisedButton(text="Confirm", on_release=accept),
         ],
     )
     holder.append(dialog)

@@ -385,15 +385,21 @@ async def test_only_room_creator_can_delete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_server_operator_deletes_protected_room_with_password() -> None:
-    hub = BabbleCastHub(host="127.0.0.1", ws_port=18785, udp_port=18786, advertise=False)
+async def test_server_operator_deletes_with_host_password() -> None:
+    hub = BabbleCastHub(
+        host="127.0.0.1",
+        ws_port=18785,
+        udp_port=18786,
+        advertise=False,
+        server_password="hostsecret",
+    )
     await hub.start()
     try:
         async with websockets.connect("ws://127.0.0.1:18785") as ws_guest:
-            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
+            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest", password="hostsecret"))
             decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
 
-            await ws_guest.send(encode_msg(MsgType.CREATE_ROOM, name="Vault", password="secret"))
+            await ws_guest.send(encode_msg(MsgType.CREATE_ROOM, name="Vault", password="roomsecret"))
             vault_room = None
             for _ in range(12):
                 msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
@@ -403,8 +409,11 @@ async def test_server_operator_deletes_protected_room_with_password() -> None:
             assert vault_room
 
         async with websockets.connect("ws://127.0.0.1:18785") as ws_host:
-            await ws_host.send(encode_msg(MsgType.HELLO, name="Boss", server_operator=True))
-            decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+            await ws_host.send(
+                encode_msg(MsgType.HELLO, name="Boss", server_operator=True, password="hostsecret")
+            )
+            welcome = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+            assert welcome.get("server_password_protected") is True
 
             await ws_host.send(encode_msg(MsgType.DELETE_ROOM, room_id=vault_room))
             err = None
@@ -414,10 +423,10 @@ async def test_server_operator_deletes_protected_room_with_password() -> None:
                     err = msg
                     break
             assert err is not None
-            assert err.get("error_code") == "room_password_required"
+            assert err.get("error_code") == "password_required"
 
             await ws_host.send(
-                encode_msg(MsgType.DELETE_ROOM, room_id=vault_room, password="secret")
+                encode_msg(MsgType.DELETE_ROOM, room_id=vault_room, host_password="hostsecret")
             )
             deleted = None
             for _ in range(12):

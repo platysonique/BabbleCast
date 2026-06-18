@@ -32,6 +32,7 @@ from babblecast.client.qt.credentials_dialog import (
     ConnectCredentialsDialog,
     DisconnectConfirmDialog,
     HostCredentialsDialog,
+    HostPasswordConfirmDialog,
     RoomCreateDialog,
     RoomPasswordDialog,
 )
@@ -844,8 +845,15 @@ class MainWindow(QMainWindow):
             return
         room_label = label.split(" (")[0]
         extra = ""
-        if self._bridge.delete_room_needs_password(self._active_link_id, room_meta):
-            extra = "\n\nAs host, enter this room’s password to confirm deletion."
+        if self._bridge.delete_room_needs_host_password(self._active_link_id, room_meta):
+            extra = "\n\nEnter your host password to confirm deletion."
+        elif self._bridge.is_server_operator(self._active_link_id):
+            creator_id = str(room_meta.get("creator_id", ""))
+            if creator_id and session and creator_id != session.client_id:
+                extra = (
+                    "\n\nTip: set a host password when starting the server "
+                    "to require your password for admin deletes."
+                )
         answer = QMessageBox.question(
             self,
             "Delete room",
@@ -856,18 +864,13 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        password = ""
-        if self._bridge.delete_room_needs_password(self._active_link_id, room_meta):
-            dlg = RoomPasswordDialog(
-                str(room_meta.get("name", "Room")),
-                self,
-                title="Confirm delete",
-                prompt="Enter room password to delete",
-            )
+        host_password = ""
+        if self._bridge.delete_room_needs_host_password(self._active_link_id, room_meta):
+            dlg = HostPasswordConfirmDialog(self)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
-            password = dlg.password
-        self._bridge.delete_room(self._active_link_id, room_id, password=password)
+            host_password = dlg.password
+        self._bridge.delete_room(self._active_link_id, room_id, host_password=host_password)
 
     def _join_selected_room(self) -> None:
         item = self._room_list.currentItem()

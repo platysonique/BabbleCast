@@ -310,23 +310,23 @@ class BabbleCastHub:
                         )
                     )
                     return
-                if room.password_digest:
-                    supplied = str(data.get("password", ""))
+                if self._password_digest:
+                    supplied = str(data.get("host_password", ""))
                     if not supplied:
                         await client.ws.send(
                             encode_msg(
                                 MsgType.ERROR,
-                                message="Room password required to delete",
-                                error_code=ErrorCode.ROOM_PASSWORD_REQUIRED.value,
+                                message="Host password required to delete",
+                                error_code=ErrorCode.PASSWORD_REQUIRED.value,
                             )
                         )
                         return
-                    if not check_password(supplied, room.password_salt, room.password_digest):
+                    if not check_password(supplied, self._password_salt, self._password_digest):
                         await client.ws.send(
                             encode_msg(
                                 MsgType.ERROR,
-                                message="Incorrect room password",
-                                error_code=ErrorCode.ROOM_PASSWORD_WRONG.value,
+                                message="Incorrect host password",
+                                error_code=ErrorCode.PASSWORD_WRONG.value,
                             )
                         )
                         return
@@ -632,6 +632,7 @@ class BabbleCastHub:
                     room_id=default.room_id,
                     room_name=default.name,
                     server_operator=client.is_server_operator,
+                    server_password_protected=self.password_protected,
                 )
             )
             await self._send_rooms(client)

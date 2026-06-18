@@ -785,22 +785,21 @@ class BabbleController:
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
         from kivymd.uix.dialog import MDDialog
 
-        needs_password = self._bridge.delete_room_needs_password(self._active_link_id, room_meta)
+        needs_password = self._bridge.delete_room_needs_host_password(self._active_link_id, room_meta)
 
-        def finish_delete(password: str = "") -> None:
-            self._bridge.delete_room(self._active_link_id, room_id, password=password)
+        def finish_delete(host_password: str = "") -> None:
+            self._bridge.delete_room(self._active_link_id, room_id, host_password=host_password)
             self.set_status(f"Deleting room “{room_name}”…")
 
         def confirm(_btn) -> None:
             dialog.dismiss()
             if needs_password:
-                from mobile.credentials_dialog import prompt_room_password
+                from mobile.credentials_dialog import prompt_host_password
 
-                prompt_room_password(
-                    room_name,
+                prompt_host_password(
                     lambda pwd: finish_delete(pwd),
                     title="Confirm delete",
-                    hint="Enter room password to delete",
+                    hint="Your host password",
                 )
             else:
                 finish_delete()
@@ -810,7 +809,14 @@ class BabbleController:
 
         host_note = ""
         if needs_password:
-            host_note = "\n\nAs host, enter this room’s password to confirm deletion."
+            host_note = "\n\nEnter your host password to confirm deletion."
+        elif self._bridge.is_server_operator(self._active_link_id):
+            creator_id = str(room_meta.get("creator_id", ""))
+            if creator_id and session and creator_id != session.client_id:
+                host_note = (
+                    "\n\nTip: set a host password when starting the server "
+                    "to require your password for admin deletes."
+                )
 
         dialog = MDDialog(
             title="Delete room",

@@ -93,13 +93,13 @@ class HostCredentialsDialog(QDialog):
                 "others find you via Discover or name.babblecast.local."
             )
         )
-        self._protect = QCheckBox("Password protect")
+        self._protect = QCheckBox("Host password")
         self._protect.setChecked(False)
         self._protect.toggled.connect(self._on_protect_toggled)
         layout.addRow(self._protect)
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password.setPlaceholderText("Password for clients")
+        self._password.setPlaceholderText("Your password — guests join; you use for admin")
         self._password.setEnabled(False)
         layout.addRow("Password", self._password)
         buttons = QDialogButtonBox(
@@ -122,7 +122,7 @@ class HostCredentialsDialog(QDialog):
             QMessageBox.warning(self, "BabbleCast", "Enter your display name.")
             return
         if self._protect.isChecked() and not self._password.text():
-            QMessageBox.warning(self, "BabbleCast", "Enter a password or uncheck Password protect.")
+            QMessageBox.warning(self, "BabbleCast", "Enter a host password or uncheck Host password.")
             return
         settings = get_settings()
         settings.hosted_server_name = self._server.text().strip()[:MAX_NAME_LEN]
@@ -252,6 +252,41 @@ class RoomPasswordDialog(QDialog):
     def _accept(self) -> None:
         if not self._password.text():
             QMessageBox.warning(self, "BabbleCast", "Enter the room password.")
+            return
+        self.accept()
+
+    @property
+    def password(self) -> str:
+        return self._password.text()
+
+
+class HostPasswordConfirmDialog(QDialog):
+    """Confirm a host admin action with the server password."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Confirm delete")
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "Enter the host password you set when starting this server.\n"
+                "This confirms you want to delete someone else's room."
+            )
+        )
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password.setPlaceholderText("Your host password")
+        layout.addWidget(self._password)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept(self) -> None:
+        if not self._password.text():
+            QMessageBox.warning(self, "BabbleCast", "Enter your host password.")
             return
         self.accept()
 
