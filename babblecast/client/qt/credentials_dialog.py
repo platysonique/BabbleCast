@@ -224,16 +224,23 @@ class RoomCreateDialog(QDialog):
 
 
 class RoomPasswordDialog(QDialog):
-    """Ask for a protected room's password before joining."""
+    """Ask for a protected room's password (join or host delete confirm)."""
 
-    def __init__(self, room_name: str, parent=None) -> None:
+    def __init__(
+        self,
+        room_name: str,
+        parent=None,
+        *,
+        title: str = "Room password",
+        prompt: str = "Room password",
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Room password")
+        self.setWindowTitle(title)
         layout = QFormLayout(self)
         layout.addRow("Room", QLineEdit(room_name, readOnly=True))
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password.setPlaceholderText("Room password")
+        self._password.setPlaceholderText(prompt)
         layout.addRow("Password", self._password)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

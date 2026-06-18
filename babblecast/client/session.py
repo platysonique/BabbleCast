@@ -557,8 +557,11 @@ class ClientSession:
             payload["password"] = password.strip()
         self._send_async(encode_msg(MsgType.CREATE_ROOM, **payload))
 
-    def delete_room(self, room_id: str) -> None:
-        self._send_async(encode_msg(MsgType.DELETE_ROOM, room_id=room_id))
+    def delete_room(self, room_id: str, *, password: str = "") -> None:
+        payload: dict[str, Any] = {"room_id": room_id}
+        if password.strip():
+            payload["password"] = password.strip()
+        self._send_async(encode_msg(MsgType.DELETE_ROOM, **payload))
 
     def join_room(self, room_id: str, *, password: str = "") -> None:
         payload: dict[str, Any] = {"room_id": room_id}

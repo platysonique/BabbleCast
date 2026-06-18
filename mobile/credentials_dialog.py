@@ -264,9 +264,15 @@ def prompt_create_room(default_name: str, on_ok: Callable[[str, str], None]) -> 
     dialog.open()
 
 
-def prompt_room_password(room_name: str, on_ok: Callable[[str], None]) -> None:
+def prompt_room_password(
+    room_name: str,
+    on_ok: Callable[[str], None],
+    *,
+    title: str = "Room password",
+    hint: str = "Room password",
+) -> None:
     password_field = MDTextField(
-        hint_text="Room password",
+        hint_text=hint,
         password=True,
         size_hint_y=None,
         height=dp(48),
@@ -293,7 +299,7 @@ def prompt_room_password(room_name: str, on_ok: Callable[[str], None]) -> None:
         on_ok(pwd)
 
     dialog = MDDialog(
-        title="Room password",
+        title=title,
         type="custom",
         content_cls=body,
         buttons=[

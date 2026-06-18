@@ -301,14 +301,35 @@ class BabbleCastHub:
                 )
                 return
             if room.creator_id and room.creator_id != client.client_id:
-                await client.ws.send(
-                    encode_msg(
-                        MsgType.ERROR,
-                        message="Only the room creator can delete this room",
-                        error_code=ErrorCode.NOT_ROOM_OWNER.value,
+                if not client.is_server_operator:
+                    await client.ws.send(
+                        encode_msg(
+                            MsgType.ERROR,
+                            message="Only the room creator can delete this room",
+                            error_code=ErrorCode.NOT_ROOM_OWNER.value,
+                        )
                     )
-                )
-                return
+                    return
+                if room.password_digest:
+                    supplied = str(data.get("password", ""))
+                    if not supplied:
+                        await client.ws.send(
+                            encode_msg(
+                                MsgType.ERROR,
+                                message="Room password required to delete",
+                                error_code=ErrorCode.ROOM_PASSWORD_REQUIRED.value,
+                            )
+                        )
+                        return
+                    if not check_password(supplied, room.password_salt, room.password_digest):
+                        await client.ws.send(
+                            encode_msg(
+                                MsgType.ERROR,
+                                message="Incorrect room password",
+                                error_code=ErrorCode.ROOM_PASSWORD_WRONG.value,
+                            )
+                        )
+                        return
             if len(self._rooms) <= 1:
                 await client.ws.send(
                     encode_msg(

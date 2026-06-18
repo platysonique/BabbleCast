@@ -423,10 +423,10 @@ class LiveScreen(MDScreen):
                 def fire_long(_dt) -> None:
                     state["ev"] = None
                     card._long_pressed = True  # type: ignore[attr-defined]
-                    creator_id = str(room_meta.get("creator_id", ""))
-                    session = app.controller._bridge.get_session(app.controller._active_link_id or "")
-                    if creator_id and session and creator_id != session.client_id:
-                        app.controller.set_status("Only the room creator can delete this room")
+                    if not app.controller._bridge.can_delete_room(
+                        app.controller._active_link_id or "", room_meta
+                    ):
+                        app.controller.set_status("You cannot delete this room")
                         return
                     if can_delete:
                         app.controller.delete_room(room_id, room_name)

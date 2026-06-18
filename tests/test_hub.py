@@ -382,3 +382,50 @@ async def test_only_room_creator_can_delete() -> None:
                 assert err.get("error_code") == "not_room_owner"
     finally:
         await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_server_operator_deletes_protected_room_with_password() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=18785, udp_port=18786, advertise=False)
+    await hub.start()
+    try:
+        async with websockets.connect("ws://127.0.0.1:18785") as ws_guest:
+            await ws_guest.send(encode_msg(MsgType.HELLO, name="Guest"))
+            decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+
+            await ws_guest.send(encode_msg(MsgType.CREATE_ROOM, name="Vault", password="secret"))
+            vault_room = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_guest.recv(), timeout=2))
+                if msg.get("type") == MsgType.ROOM_CREATED.value:
+                    vault_room = msg["room"]["room_id"]
+                    break
+            assert vault_room
+
+        async with websockets.connect("ws://127.0.0.1:18785") as ws_host:
+            await ws_host.send(encode_msg(MsgType.HELLO, name="Boss", server_operator=True))
+            decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+
+            await ws_host.send(encode_msg(MsgType.DELETE_ROOM, room_id=vault_room))
+            err = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+                if msg.get("type") == MsgType.ERROR.value:
+                    err = msg
+                    break
+            assert err is not None
+            assert err.get("error_code") == "room_password_required"
+
+            await ws_host.send(
+                encode_msg(MsgType.DELETE_ROOM, room_id=vault_room, password="secret")
+            )
+            deleted = None
+            for _ in range(12):
+                msg = decode_msg(await asyncio.wait_for(ws_host.recv(), timeout=2))
+                if msg.get("type") == MsgType.ROOM_DELETED.value:
+                    deleted = msg
+                    break
+            assert deleted is not None
+            assert deleted["room_id"] == vault_room
+    finally:
+        await hub.stop()

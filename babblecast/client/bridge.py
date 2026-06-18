@@ -328,6 +328,26 @@ class BridgeManager:
         link = self._links.get(link_id)
         return bool(link and link.is_server_operator)
 
+    def can_delete_room(self, link_id: str, room_meta: dict) -> bool:
+        session = self._sessions.get(link_id)
+        if not session:
+            return False
+        creator_id = str(room_meta.get("creator_id", ""))
+        if not creator_id or creator_id == session.client_id:
+            return True
+        return self.is_server_operator(link_id)
+
+    def delete_room_needs_password(self, link_id: str, room_meta: dict) -> bool:
+        if not room_meta.get("password_protected"):
+            return False
+        if not self.is_server_operator(link_id):
+            return False
+        session = self._sessions.get(link_id)
+        if not session:
+            return False
+        creator_id = str(room_meta.get("creator_id", ""))
+        return bool(creator_id and creator_id != session.client_id)
+
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
         link = self._links.get(link_id)
         was_connected = bool(link and link.connected)
@@ -518,10 +538,10 @@ class BridgeManager:
         if session:
             session.create_room(name, password=password)
 
-    def delete_room(self, link_id: str, room_id: str) -> None:
+    def delete_room(self, link_id: str, room_id: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)
         if session:
-            session.delete_room(room_id)
+            session.delete_room(room_id, password=password)
 
     def join_room(self, link_id: str, room_id: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)

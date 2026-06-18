@@ -827,9 +827,8 @@ class MainWindow(QMainWindow):
         menu.addAction("Join room", lambda: self._join_room_item(item))
         session = self._bridge.get_session(self._active_link_id)
         room_meta = session.room_by_id(room_id) if session else None
-        creator_id = str(room_meta.get("creator_id", "")) if room_meta else ""
         can_delete = self._room_list.count() > 1 and (
-            not creator_id or (session and creator_id == session.client_id)
+            room_meta is not None and self._bridge.can_delete_room(self._active_link_id, room_meta)
         )
         if can_delete:
             menu.addAction("Delete room", lambda: self._delete_room(room_id, item.text().lstrip("▸ ").lstrip("🔒 ")))
@@ -838,16 +837,37 @@ class MainWindow(QMainWindow):
     def _delete_room(self, room_id: str, label: str) -> None:
         if not self._active_link_id:
             return
+        session = self._bridge.get_session(self._active_link_id)
+        room_meta = session.room_by_id(room_id) if session else None
+        if not room_meta or not self._bridge.can_delete_room(self._active_link_id, room_meta):
+            self._status.setText("You cannot delete this room")
+            return
+        room_label = label.split(" (")[0]
+        extra = ""
+        if self._bridge.delete_room_needs_password(self._active_link_id, room_meta):
+            extra = "\n\nAs host, enter this room’s password to confirm deletion."
         answer = QMessageBox.question(
             self,
             "Delete room",
-            f"Delete “{label.split(' (')[0]}”?\n\nEveryone in that room moves to another room. "
-            "Local chat history for this room is removed.",
+            f"Delete “{room_label}”?\n\nEveryone in that room moves to another room. "
+            "Local chat history for this room is removed."
+            f"{extra}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._bridge.delete_room(self._active_link_id, room_id)
+        password = ""
+        if self._bridge.delete_room_needs_password(self._active_link_id, room_meta):
+            dlg = RoomPasswordDialog(
+                str(room_meta.get("name", "Room")),
+                self,
+                title="Confirm delete",
+                prompt="Enter room password to delete",
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            password = dlg.password
+        self._bridge.delete_room(self._active_link_id, room_id, password=password)
 
     def _join_selected_room(self) -> None:
         item = self._room_list.currentItem()

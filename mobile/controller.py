@@ -779,20 +779,38 @@ class BabbleController:
             return
         session = self._bridge.get_session(self._active_link_id)
         room_meta = session.room_by_id(room_id) if session else None
-        creator_id = str(room_meta.get("creator_id", "")) if room_meta else ""
-        if creator_id and session and creator_id != session.client_id:
-            self.set_status("Only the room creator can delete this room")
+        if not room_meta or not self._bridge.can_delete_room(self._active_link_id, room_meta):
+            self.set_status("You cannot delete this room")
             return
         from kivymd.uix.button import MDFlatButton, MDRaisedButton
         from kivymd.uix.dialog import MDDialog
 
+        needs_password = self._bridge.delete_room_needs_password(self._active_link_id, room_meta)
+
+        def finish_delete(password: str = "") -> None:
+            self._bridge.delete_room(self._active_link_id, room_id, password=password)
+            self.set_status(f"Deleting room “{room_name}”…")
+
         def confirm(_btn) -> None:
             dialog.dismiss()
-            self._bridge.delete_room(self._active_link_id, room_id)
-            self.set_status(f"Deleting room “{room_name}”…")
+            if needs_password:
+                from mobile.credentials_dialog import prompt_room_password
+
+                prompt_room_password(
+                    room_name,
+                    lambda pwd: finish_delete(pwd),
+                    title="Confirm delete",
+                    hint="Enter room password to delete",
+                )
+            else:
+                finish_delete()
 
         def cancel(_btn) -> None:
             dialog.dismiss()
+
+        host_note = ""
+        if needs_password:
+            host_note = "\n\nAs host, enter this room’s password to confirm deletion."
 
         dialog = MDDialog(
             title="Delete room",
@@ -800,6 +818,7 @@ class BabbleController:
                 f"Delete “{room_name}”?\n\n"
                 "Everyone in that room moves to another room. "
                 "Local chat history for this room is removed."
+                f"{host_note}"
             ),
             buttons=[
                 MDFlatButton(text="Cancel", on_release=cancel),
