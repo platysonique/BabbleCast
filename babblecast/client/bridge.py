@@ -107,6 +107,7 @@ class BridgeManager:
         self._speaker = None
         self._audio_started = False
         self._audio_starting = False
+        self._audio_failed = False
         self._audio_lock = threading.Lock()
         self._global_muted = False
         self._global_ptt = False
@@ -174,6 +175,8 @@ class BridgeManager:
         """Start shared mic/speaker. On Android, opening is async — returns False until ready."""
         if self._shutting_down or self._audio_started:
             return self._audio_started
+        if self._audio_failed:
+            return False
         if platform_name() == "android":
             self._start_android_audio_async()
             return False
@@ -181,7 +184,7 @@ class BridgeManager:
 
     def _start_android_audio_async(self) -> None:
         with self._audio_lock:
-            if self._audio_started or self._audio_starting or self._shutting_down:
+            if self._audio_started or self._audio_starting or self._shutting_down or self._audio_failed:
                 return
             self._audio_starting = True
 
@@ -204,6 +207,7 @@ class BridgeManager:
                             except RuntimeError:
                                 pass
                     elif self._on_error:
+                        self._audio_failed = True
                         for link_id in list(self._sessions.keys()):
                             self._on_error(
                                 link_id,
@@ -254,8 +258,10 @@ class BridgeManager:
         except Exception as exc:
             logger.exception("Bridge audio startup failed")
             self._teardown_audio()
+            self._audio_failed = True
             return False
         self._audio_started = True
+        self._audio_failed = False
         self._attach_bridge_speaker_to_sessions()
         if platform_name() == "android":
             self._start_android_bt_watch()
@@ -372,6 +378,7 @@ class BridgeManager:
         *,
         server_operator: bool = False,
     ) -> str:
+        self._audio_failed = False
         link_id = new_id()
         display = label or f"{host}:{port}"
         state = ServerLinkState(link_id=link_id, label=display, host=host, port=port)

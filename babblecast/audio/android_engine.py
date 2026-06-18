@@ -30,8 +30,23 @@ def _jni():
 
 
 def _java_short_array(size: int):
-    """Java short[] — pyjnius can construct these; byte[] cannot (No constructor available)."""
-    return _jni()("[S")(size)
+    """Allocate Java short[] — primitive arrays have no public constructors in pyjnius."""
+    if size <= 0:
+        size = 1
+    try:
+        from jnius import jarray
+
+        return jarray("short")(size)
+    except Exception:
+        pass
+    try:
+        autoclass = _jni()
+        jarray_cls = autoclass("java.lang.reflect.Array")
+        short_type = autoclass("java.lang.Short").TYPE
+        return jarray_cls.newInstance(short_type, size)
+    except Exception:
+        logger.exception("Failed to allocate Java short[] (size=%s)", size)
+        raise
 
 
 def _short_array_to_numpy(j_buf, n: int) -> np.ndarray:

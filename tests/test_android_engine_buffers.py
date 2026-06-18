@@ -6,14 +6,16 @@ from pathlib import Path
 
 
 def test_android_engine_uses_java_short_arrays_not_byte() -> None:
-    """byte[] has no constructor in p4a pyjnius; short[] is the supported path."""
+    """Primitive arrays must use jarray/reflect — autoclass('[S') has no constructor."""
     text = Path(__file__).resolve().parents[1].joinpath("babblecast/audio/android_engine.py").read_text(
         encoding="utf-8"
     )
+    assert "jarray" in text
     assert "_java_short_array" in text
-    assert '"[S"' in text or "'[S'" in text
+    assert 'autoclass("[S")' not in text
+    assert "autoclass('[S')" not in text
     assert "_java_byte_array" not in text
-    assert "cast(\"byte[]\"" not in text
+    assert 'cast("byte[]"' not in text
 
 
 def test_bridge_android_audio_finish_is_zero_arg() -> None:

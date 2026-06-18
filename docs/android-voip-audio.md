@@ -31,7 +31,7 @@ This is the definitive reference for BabbleCast voice on Android (Samsung 14/15,
 
 | Do | Don't |
 |----|--------|
-| Allocate Java **`short[]`** via `autoclass('[S')(n)` | `autoclass('[B')(n)` — **No constructor available** on p4a |
+| Allocate Java **`short[]`** via `jarray("short")(n)` or `Array.newInstance(Short.TYPE, n)` | `autoclass('[S')(n)` or `autoclass('[B')(n)` — **No constructor available** |
 | `AudioRecord.read(short[], …)` then copy to NumPy | `cast('byte[]', bytearray)` — Java writes a **copy**, Python buffer stays zero |
 | `AudioTrack.write(short[], …)` after filling Java array | Assume verify = launch-only means Connect works |
 

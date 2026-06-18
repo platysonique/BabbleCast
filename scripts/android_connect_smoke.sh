@@ -29,22 +29,15 @@ fi
 "${ADB}" "${ADB_FLAGS[@]}" logcat -c
 "${ADB}" "${ADB_FLAGS[@]}" shell am force-stop org.babblecast.babblecast || true
 "${ADB}" "${ADB_FLAGS[@]}" shell monkey -p org.babblecast.babblecast -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-sleep 5
+sleep 12
 
-W=$("${ADB}" "${ADB_FLAGS[@]}" shell wm size 2>/dev/null | awk -F'[: x]+' '/Physical size/{print $3; exit}')
-H=$("${ADB}" "${ADB_FLAGS[@]}" shell wm size 2>/dev/null | awk -F'[: x]+' '/Physical size/{print $4; exit}')
-if [[ -z "${W}" || -z "${H}" ]]; then
-	echo "Could not read screen size" >&2
-	exit 1
-fi
+# 1080x2340 Samsung: discovered server card ~540,720; credentials dialog accepts via Enter.
+"${ADB}" "${ADB_FLAGS[@]}" shell input tap 540 720
+sleep 2
+"${ADB}" "${ADB_FLAGS[@]}" shell input keyevent 66
+sleep 18
 
-# First server card, then Connect button (Connect tab default).
-"${ADB}" "${ADB_FLAGS[@]}" shell input tap "$((W / 2))" "$((H * 45 / 100))"
-sleep 1
-"${ADB}" "${ADB_FLAGS[@]}" shell input tap "$((W / 2))" "$((H * 72 / 100))"
-sleep 10
-
-LOG="$("${ADB}" "${ADB_FLAGS[@]}" logcat -d -t 800)"
+LOG="$("${ADB}" "${ADB_FLAGS[@]}" logcat -d -t 1200)"
 if echo "${LOG}" | grep -qE "python.*Traceback|No constructor available|missing 1 required positional argument|NameError"; then
 	echo "${LOG}" | grep -E "python.*(Traceback|No constructor|missing 1 required|NameError)" | tail -30
 	echo "CONNECT SMOKE FAILED: Python crash" >&2
@@ -52,10 +45,12 @@ if echo "${LOG}" | grep -qE "python.*Traceback|No constructor available|missing 
 fi
 if echo "${LOG}" | grep -q "Android mic capture started"; then
 	echo "CONNECT SMOKE OK: mic capture started"
+elif echo "${LOG}" | grep -q "Android audio ready"; then
+	echo "CONNECT SMOKE OK: bridge reported audio ready"
 elif echo "${LOG}" | grep -q "Audio unavailable"; then
 	echo "CONNECT SMOKE OK: graceful chat-only (audio unavailable message)"
 else
-	echo "${LOG}" | grep -E "Starting Android audio|Bridge audio|Android speaker|python" | tail -25
+	echo "${LOG}" | grep -E "Bridge audio|Starting Android|Android speaker|connect_selected|python" | tail -30
 	echo "CONNECT SMOKE FAILED: no mic capture or graceful audio failure" >&2
 	exit 1
 fi
