@@ -189,8 +189,15 @@ class BabbleController:
         if count:
             screen.set_discovery_status(f"{count} server(s) on your network — tap one to connect")
         elif location_granted():
+            from babblecast.network import primary_lan_ipv4, saved_lan_hosts
+
+            hint = ""
+            hosts = saved_lan_hosts()
+            if hosts:
+                hint = f" Last PC: {hosts[0]}."
             screen.set_discovery_status(
-                "No servers yet — scanning your network, or enter a LAN IP below"
+                f"No servers yet — scanning LAN ({primary_lan_ipv4() or '?'})…"
+                f"{hint} Desktop must use Host Server (port 9513)."
             )
         else:
             screen.set_discovery_status(
@@ -202,13 +209,21 @@ class BabbleController:
         if not self._alive():
             return
         acquire_multicast_lock()
+        screen = self.app.screen("connect")
         if force:
             self._last_server_signature = None
-            screen = self.app.screen("connect")
             if hasattr(screen, "_server_signature"):
                 screen._server_signature = None
-        self._discovery.bump()
-        self._set_discovery_status(len(self._discovery.servers))
+        servers = self._discovery.servers
+        if force:
+            screen.update_servers(servers)
+            self._last_server_signature = tuple(
+                (s.service_name, s.host, s.ws_port) for s in servers
+            )
+        else:
+            self._apply_servers(servers)
+        self._set_discovery_status(len(servers))
+        self._discovery.scan_now()
 
     def _password_required_for(self, host: str, port: int) -> bool:
         host = host.strip().lower()

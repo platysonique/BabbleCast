@@ -280,10 +280,16 @@ class ServerDiscovery:
     def _merge_scan_hits(self, hits: list[LanServerHit]) -> bool:
         if not hits:
             return False
+        from dataclasses import replace
+
         known = self._known_hosts()
+        hit_hosts = {hit.host for hit in hits}
         now = time.time()
         changed = False
         with self._lock:
+            for key, srv in list(self._servers.items()):
+                if srv.host in hit_hosts:
+                    self._servers[key] = replace(srv, seen_at=now)
             for hit in hits:
                 if hit.host in known:
                     continue
@@ -305,6 +311,32 @@ class ServerDiscovery:
                 changed = True
         return changed
 
+    def _process_scan_hits(self, hits: list[LanServerHit]) -> None:
+        if not hits:
+            return
+        changed = self._merge_scan_hits(hits)
+        logger.info("LAN discovery found %s server(s) on port %s", len(hits), DEFAULT_WS_PORT)
+        if changed or hits:
+            self._emit()
+
+    def scan_now(self) -> None:
+        """Run one LAN/beacon scan immediately (Connect tab refresh)."""
+        if not self._running:
+            return
+        threading.Thread(
+            target=self._scan_once,
+            daemon=True,
+            name="bbc-lan-scan-now",
+        ).start()
+
+    def _scan_once(self) -> None:
+        try:
+            hits = discover_lan_servers()
+        except Exception:
+            logger.exception("LAN discovery scan failed")
+            return
+        self._process_scan_hits(hits)
+
     def bump(self) -> None:
         """Push the current server list to listeners (e.g. after UI tab change)."""
         self._emit()
@@ -313,16 +345,7 @@ class ServerDiscovery:
         """UDP beacon + mesh TCP probe for servers mDNS cannot reach across subnets."""
         while not self._stop_event.is_set():
             interval = self._scan_interval_sec()
-            try:
-                hits = discover_lan_servers()
-            except Exception:
-                logger.exception("LAN discovery scan failed")
-                hits = []
-
-            if self._merge_scan_hits(hits):
-                logger.info("LAN discovery added %s server(s)", len(hits))
-                self._emit()
-
+            self._scan_once()
             if self._stop_event.wait(interval):
                 break
 
