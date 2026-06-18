@@ -53,7 +53,19 @@ class BabbleCastMobileApp(MDApp):
         root.add_widget(tab_row)
 
         Clock.schedule_once(lambda _dt: self.controller.start_discovery(), 0)
+        Clock.schedule_once(lambda _dt: self._maybe_smoke_connect(), 2.0)
         return root
+
+    def _maybe_smoke_connect(self) -> None:
+        from mobile.display_name import default_display_name
+        from mobile.smoke_intent import read_smoke_connect_target
+
+        target = read_smoke_connect_target()
+        if not target:
+            return
+        host, port = target
+        name = self.controller.settings.display_name or default_display_name(self.controller.settings)
+        self.controller.connect_to(host, port, name, skip_name_prompt=True)
 
     def switch_tab(self, name: str) -> None:
         self._screen_manager.current = name

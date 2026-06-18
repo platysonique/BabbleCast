@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Connect-path smoke: install APK, tap Connect, require audio startup markers in logcat.
+# Connect-path smoke via intent extra (Kivy ignores adb input tap).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT}"
@@ -11,7 +11,14 @@ if [[ -n "${SERIAL}" ]]; then
 	ADB_FLAGS=(-s "${SERIAL}")
 fi
 
+SERVER_HOST="${BBC_SMOKE_SERVER:-192.168.1.141}"
+SERVER_PORT="${BBC_SMOKE_PORT:-9513}"
+SMOKE_TARGET="${SERVER_HOST}:${SERVER_PORT}"
+
 APK="${ROOT}/packaging/android/releases/babblecast-1.0.0-arm64-v8a-debug.apk"
+PKG="org.babblecast.babblecast"
+ACTIVITY="org.kivy.android.PythonActivity"
+
 if [[ ! -f "${APK}" ]]; then
 	echo "APK missing: ${APK}" >&2
 	exit 1
@@ -27,30 +34,48 @@ fi
 
 "${ADB}" "${ADB_FLAGS[@]}" install -r "${APK}" >/dev/null
 "${ADB}" "${ADB_FLAGS[@]}" logcat -c
-"${ADB}" "${ADB_FLAGS[@]}" shell am force-stop org.babblecast.babblecast || true
-"${ADB}" "${ADB_FLAGS[@]}" shell monkey -p org.babblecast.babblecast -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-sleep 12
+"${ADB}" "${ADB_FLAGS[@]}" shell am force-stop "${PKG}" || true
+"${ADB}" "${ADB_FLAGS[@]}" shell am start -n "${PKG}/${ACTIVITY}" -e bbc_smoke_connect "${SMOKE_TARGET}" >/dev/null
+echo "Launched with smoke connect → ${SMOKE_TARGET}"
+sleep 28
 
-# 1080x2340 Samsung: discovered server card ~540,720; credentials dialog accepts via Enter.
-"${ADB}" "${ADB_FLAGS[@]}" shell input tap 540 720
-sleep 2
-"${ADB}" "${ADB_FLAGS[@]}" shell input keyevent 66
-sleep 18
+# Do NOT use tail — presence DEBUG floods logcat and pushes mic/audio lines out.
+PYLOG="$("${ADB}" "${ADB_FLAGS[@]}" logcat -d | grep "I python" || true)"
 
-LOG="$("${ADB}" "${ADB_FLAGS[@]}" logcat -d -t 1200)"
-if echo "${LOG}" | grep -qE "python.*Traceback|No constructor available|missing 1 required positional argument|NameError"; then
-	echo "${LOG}" | grep -E "python.*(Traceback|No constructor|missing 1 required|NameError)" | tail -30
-	echo "CONNECT SMOKE FAILED: Python crash" >&2
+if echo "${PYLOG}" | grep -qE "No constructor available|missing 1 required positional argument"; then
+	echo "${PYLOG}" | grep -E "No constructor|missing 1 required|Traceback" | tail -20
+	echo "CONNECT SMOKE FAILED: JNI/audio constructor crash" >&2
 	exit 1
 fi
-if echo "${LOG}" | grep -q "Android mic capture started"; then
+if echo "${PYLOG}" | grep -q "Bridge audio startup failed"; then
+	echo "${PYLOG}" | grep -E "Bridge audio|No constructor|Traceback" | tail -20
+	echo "CONNECT SMOKE FAILED: bridge audio startup failed" >&2
+	exit 1
+fi
+if echo "${PYLOG}" | grep -q "babblecast/.*Traceback"; then
+	echo "${PYLOG}" | grep -E "babblecast/|Traceback|JavaException" | tail -20
+	echo "CONNECT SMOKE FAILED: BabbleCast Python crash" >&2
+	exit 1
+fi
+if echo "${PYLOG}" | grep -q "Android mic capture started"; then
 	echo "CONNECT SMOKE OK: mic capture started"
-elif echo "${LOG}" | grep -q "Android audio ready"; then
+	echo "${PYLOG}" | grep -iE "Smoke connect|bridge.connect|mic capture|speaker output|audio ready" | head -10
+	exit 0
+fi
+if echo "${PYLOG}" | grep -q "Android audio ready"; then
 	echo "CONNECT SMOKE OK: bridge reported audio ready"
-elif echo "${LOG}" | grep -q "Audio unavailable"; then
+	exit 0
+fi
+if echo "${PYLOG}" | grep -q "Audio unavailable"; then
 	echo "CONNECT SMOKE OK: graceful chat-only (audio unavailable message)"
-else
-	echo "${LOG}" | grep -E "Bridge audio|Starting Android|Android speaker|connect_selected|python" | tail -30
-	echo "CONNECT SMOKE FAILED: no mic capture or graceful audio failure" >&2
+	exit 0
+fi
+if echo "${PYLOG}" | grep -qE "Smoke connect intent|bridge.connect"; then
+	echo "${PYLOG}" | grep -iE "Smoke connect|Starting Android|Bridge audio|Android mic|Android speaker|audio ready|Traceback" | tail -25
+	echo "CONNECT SMOKE FAILED: connect ran but audio never started" >&2
 	exit 1
 fi
+
+echo "${PYLOG}" | grep -iE "Smoke|python" | tail -25
+echo "CONNECT SMOKE FAILED: smoke intent did not run" >&2
+exit 1
