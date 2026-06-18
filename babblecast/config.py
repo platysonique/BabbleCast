@@ -42,6 +42,7 @@ class UserSettings:
     ui_panel_expanded: bool = False
     ui_self_audio_expanded: bool = False
     skip_disconnect_confirm: bool = False
+    android_audio_route: str = "speaker"
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -72,6 +73,7 @@ class UserSettings:
                 ui_panel_expanded=bool(raw.get("ui_panel_expanded", False)),
                 ui_self_audio_expanded=bool(raw.get("ui_self_audio_expanded", False)),
                 skip_disconnect_confirm=bool(raw.get("skip_disconnect_confirm", False)),
+                android_audio_route=str(raw.get("android_audio_route", "speaker")),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 
+from babblecast.audio.android_routing import get_android_router, normalize_audio_route
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
 from babblecast.constants import (
     CHANNELS,
@@ -26,36 +27,6 @@ def _jni():
     from jnius import autoclass
 
     return autoclass
-
-
-def _enable_speakerphone() -> object | None:
-    """Route VoIP playback to the loudspeaker (not earpiece)."""
-    try:
-        autoclass = _jni()
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        Context = autoclass("android.content.Context")
-        AudioManager = autoclass("android.media.AudioManager")
-        activity = PythonActivity.mActivity
-        if activity is None:
-            return None
-        am = activity.getSystemService(Context.AUDIO_SERVICE)
-        am.setMode(AudioManager.MODE_IN_COMMUNICATION)
-        am.setSpeakerphoneOn(True)
-        return am
-    except Exception:
-        logger.exception("Failed to enable speakerphone routing")
-        return None
-
-
-def _disable_speakerphone(am) -> None:
-    if am is None:
-        return
-    try:
-        AudioManager = _jni()("android.media.AudioManager")
-        am.setSpeakerphoneOn(False)
-        am.setMode(AudioManager.MODE_NORMAL)
-    except Exception:
-        logger.debug("Speakerphone reset failed", exc_info=True)
 
 
 class AndroidMicCapture:
@@ -154,9 +125,9 @@ class AndroidMicCapture:
         logger.info("Android mic capture started")
 
     def stop(self, *, teardown: bool = False) -> None:
-        _ = teardown
         self._running = False
-        self._on_level = None
+        if teardown:
+            self._on_level = None
         if self._record:
             try:
                 self._record.stopRecording()
@@ -176,6 +147,18 @@ class AndroidMicCapture:
     def set_device(self, device_key: str | None) -> None:
         pass
 
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def restart(self) -> None:
+        if not self._running:
+            return
+        on_level = self._on_level
+        self.stop()
+        self._on_level = on_level
+        self.start()
+
 
 class AndroidSpeakerOutput:
     def __init__(self, device_key: str | None, master_volume: float = 1.0) -> None:
@@ -184,9 +167,9 @@ class AndroidSpeakerOutput:
         self._participant_volumes: dict[str, float] = {}
         self._participant_muted: dict[str, bool] = {}
         self._track = None
-        self._audio_manager = None
         self._running = False
         self._thread: threading.Thread | None = None
+        self._route = normalize_audio_route(None)
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
@@ -277,10 +260,11 @@ class AndroidSpeakerOutput:
                 AudioTrack.MODE_STREAM,
             )
 
-    def start(self) -> None:
+    def start(self, *, route: str | None = None) -> None:
         if self._thread:
             return
-        self._audio_manager = _enable_speakerphone()
+        self._route = normalize_audio_route(route or get_android_router().route)
+        get_android_router().apply(self._route)
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioTrack = autoclass("android.media.AudioTrack")
@@ -296,7 +280,7 @@ class AndroidSpeakerOutput:
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()
-        logger.info("Android speaker output started (speakerphone routed)")
+        logger.info("Android speaker output started (route=%s)", self._route)
 
     def stop(self) -> None:
         self._running = False
@@ -315,8 +299,16 @@ class AndroidSpeakerOutput:
             except Exception:
                 pass
             self._track = None
-        _disable_speakerphone(self._audio_manager)
-        self._audio_manager = None
+        get_android_router().shutdown()
 
     def set_device(self, device_key: str | None) -> None:
-        pass
+        if device_key:
+            self.set_route(device_key)
+
+    def set_route(self, route: str, *, mic_restart_cb=None) -> None:
+        route = normalize_audio_route(route)
+        if route == self._route and self._thread:
+            return
+        self._route = route
+        get_android_router().apply(route, mic_restart_cb=mic_restart_cb)
+        logger.info("Android speaker route hot-swapped → %s", route)

@@ -120,6 +120,41 @@ class SideDetailPanel(MDBoxLayout):
         self_layout.add_widget(self._master_label)
         self_layout.add_widget(self._master_slider)
 
+        from kivy.utils import platform as kivy_platform
+
+        self._route_row = MDBoxLayout(
+            orientation="vertical",
+            spacing=dp(2),
+            size_hint_y=None,
+            height=0,
+        )
+        if kivy_platform == "android":
+            self._route_row.height = dp(52)
+            self._route_label = MDLabel(
+                text="Output route: Speaker",
+                theme_text_color="Custom",
+                text_color=MUTED,
+                font_style="Caption",
+                size_hint_y=None,
+                height=dp(16),
+            )
+            btn_row = MDBoxLayout(spacing=dp(4), size_hint_y=None, height=dp(32))
+            self._route_buttons: dict[str, MDFlatButton] = {}
+            for route_id, label, _enabled in controller.list_audio_routes():
+                btn = MDFlatButton(
+                    text=label,
+                    size_hint_x=0.25,
+                    on_release=lambda _b, rid=route_id: self._route_pressed(rid),
+                )
+                self._route_buttons[route_id] = btn
+                btn_row.add_widget(btn)
+            self._route_row.add_widget(self._route_label)
+            self._route_row.add_widget(btn_row)
+        else:
+            self._route_label = None
+            self._route_buttons = {}
+        self_layout.add_widget(self._route_row)
+
         self._body.add_widget(self._self_section)
 
         self._peer_box = MDBoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=1)
@@ -193,6 +228,24 @@ class SideDetailPanel(MDBoxLayout):
         self._noise_label.text = f"Noise suppression: {int(s.noise_suppression * 100)}%"
         self._master_label.text = f"Master output: {int(s.output_volume * 100)}%"
         self._mic_caption.text = f"Mic · {int(s.input_volume * 100)}%"
+        self._refresh_route_ui()
+
+    def _refresh_route_ui(self) -> None:
+        if not self._route_buttons:
+            return
+        s = self._controller.settings
+        selected = getattr(s, "android_audio_route", "speaker")
+        labels = {rid: label for rid, label, _ in self._controller.list_audio_routes()}
+        if self._route_label:
+            self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
+        available = {rid: ok for rid, _lbl, ok in self._controller.list_audio_routes()}
+        for route_id, btn in self._route_buttons.items():
+            btn.disabled = not available.get(route_id, False)
+            btn.text_color = ACCENT if route_id == selected else MUTED
+
+    def _route_pressed(self, route_id: str) -> None:
+        self._controller.set_audio_route(route_id)
+        self._refresh_route_ui()
 
     def sync_from_settings(self) -> None:
         if not self._controller:

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from babblecast.audio.factory import create_mic, create_speaker
+from babblecast.audio.factory import create_mic, create_speaker, platform_name
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
 from babblecast.client.session import ClientSession
 from babblecast.config import UserSettings, get_settings, save_settings
@@ -144,7 +144,12 @@ class BridgeManager:
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
         try:
-            self._speaker.start()
+            if platform_name() == "android":
+                from babblecast.audio.android_routing import normalize_audio_route
+
+                self._speaker.start(route=normalize_audio_route(self._settings.android_audio_route))
+            else:
+                self._speaker.start()
             self._mic.set_input_volume(self._settings.input_volume)
             self._mic.start()
         except Exception as exc:
@@ -361,6 +366,32 @@ class BridgeManager:
         save_settings(self._settings)
         if self._speaker:
             self._speaker.set_device(device_key)
+
+    def set_audio_route(self, route: str) -> None:
+        """Hot-swap Android speaker/earpiece/Bluetooth (no-op on desktop)."""
+        if platform_name() != "android":
+            return
+        from babblecast.audio.android_routing import normalize_audio_route
+
+        route = normalize_audio_route(route)
+        self._settings.android_audio_route = route
+        save_settings(self._settings)
+        if self._speaker and hasattr(self._speaker, "set_route"):
+            self._speaker.set_route(route, mic_restart_cb=self._restart_mic_if_running)
+
+    def list_audio_routes(self) -> list[tuple[str, str, bool]]:
+        if platform_name() != "android":
+            return []
+        from babblecast.audio.android_routing import get_android_router
+
+        return get_android_router().list_routes()
+
+    def _restart_mic_if_running(self) -> None:
+        if self._mic and getattr(self._mic, "running", False):
+            try:
+                self._mic.restart()
+            except Exception:
+                logger.exception("Mic restart after route change failed")
 
     def set_master_output_volume(self, volume: float) -> None:
         self._settings.output_volume = max(0.0, min(2.0, volume))

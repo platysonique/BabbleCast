@@ -329,6 +329,12 @@ class BabbleController:
     def set_input_volume(self, volume: float) -> None:
         self._bridge.set_input_volume(volume)
 
+    def list_audio_routes(self) -> list[tuple[str, str, bool]]:
+        return self._bridge.list_audio_routes()
+
+    def set_audio_route(self, route: str) -> None:
+        self._bridge.set_audio_route(route)
+
     def set_noise_suppression(self, strength: float) -> None:
         self._bridge.set_noise_suppression(strength)
 
