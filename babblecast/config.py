@@ -44,6 +44,7 @@ class UserSettings:
     skip_disconnect_confirm: bool = False
     android_audio_route: str = "speaker"
     host_password: str = ""
+    room_passwords: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -76,6 +77,7 @@ class UserSettings:
                 skip_disconnect_confirm=bool(raw.get("skip_disconnect_confirm", False)),
                 android_audio_route=str(raw.get("android_audio_route", "speaker")),
                 host_password=str(raw.get("host_password", "")),
+                room_passwords=dict(raw.get("room_passwords", {})),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

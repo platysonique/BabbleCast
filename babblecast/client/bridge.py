@@ -14,6 +14,12 @@ from babblecast.client.session import ClientSession
 from babblecast.config import UserSettings, get_settings, save_settings
 from babblecast.constants import DEFAULT_WS_PORT, VOICE_LEVEL_WS_MIN_INTERVAL_SEC
 from babblecast.protocol import new_id
+from babblecast.room_secrets import (
+    forget_room_password,
+    get_room_password,
+    remember_room_password,
+    room_password_admin_display,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,8 @@ class BridgeManager:
         self._on_audio_route_changed = on_audio_route_changed
         self._local_mic_level = 0.0
         self._last_ws_level_sent = 0.0
+        self._pending_create_password: dict[str, tuple[str, str]] = {}
+        self._pending_join_password: dict[str, tuple[str, str]] = {}
         self._links: dict[str, ServerLinkState] = {}
         self._sessions: dict[str, ClientSession] = {}
         self._lock = threading.Lock()
@@ -296,8 +304,8 @@ class BridgeManager:
             on_presence=lambda rid, p, lid=link_id: self._on_presence and self._on_presence(lid, rid, p),
             on_chat=lambda d, lid=link_id: self._on_chat and self._on_chat(lid, d),
             on_rooms=lambda r, lid=link_id: self._on_rooms and self._on_rooms(lid, r),
-            on_joined=lambda rid, rn, lid=link_id: self._on_joined and self._on_joined(lid, rid, rn),
-            on_room_deleted=lambda rid, lid=link_id: self._on_room_deleted and self._on_room_deleted(lid, rid),
+            on_joined=lambda rid, rn, lid=link_id: self._handle_joined(lid, rid, rn),
+            on_room_deleted=lambda rid, lid=link_id: self._handle_room_deleted(lid, rid),
             on_connected=_connected,
             on_disconnected=lambda reason, lid=link_id: self._handle_disconnect(lid, reason),
             on_error=lambda m, ec, lid=link_id: self._on_error and self._on_error(lid, m, ec),
@@ -349,6 +357,8 @@ class BridgeManager:
         return session.host_password_protected
 
     def _handle_disconnect(self, link_id: str, reason: str) -> None:
+        self._pending_create_password.pop(link_id, None)
+        self._pending_join_password.pop(link_id, None)
         link = self._links.get(link_id)
         was_connected = bool(link and link.connected)
         self._sessions.pop(link_id, None)
@@ -533,9 +543,54 @@ class BridgeManager:
         for session in self._sessions.values():
             session.update_settings(settings)
 
+    def _handle_joined(self, link_id: str, room_id: str, room_name: str) -> None:
+        pending_create = self._pending_create_password.pop(link_id, None)
+        if pending_create and pending_create[0] == room_name.strip():
+            self._remember_room_password(link_id, room_id, pending_create[1])
+        else:
+            pending_join = self._pending_join_password.pop(link_id, None)
+            if pending_join and pending_join[0] == room_id:
+                self._remember_room_password(link_id, room_id, pending_join[1])
+        if self._on_joined:
+            self._on_joined(link_id, room_id, room_name)
+
+    def _handle_room_deleted(self, link_id: str, room_id: str) -> None:
+        self._forget_room_password(link_id, room_id)
+        if self._on_room_deleted:
+            self._on_room_deleted(link_id, room_id)
+
+    def _remember_room_password(self, link_id: str, room_id: str, password: str) -> None:
+        link = self._links.get(link_id)
+        if not link:
+            return
+        remember_room_password(self._settings, link.host, link.port, room_id, password)
+
+    def _forget_room_password(self, link_id: str, room_id: str) -> None:
+        link = self._links.get(link_id)
+        if not link:
+            return
+        forget_room_password(self._settings, link.host, link.port, room_id)
+
+    def get_remembered_room_password(self, link_id: str, room_id: str) -> str:
+        link = self._links.get(link_id)
+        if not link:
+            return ""
+        return get_room_password(self._settings, link.host, link.port, room_id)
+
+    def admin_room_password_display(self, link_id: str) -> tuple[bool, str]:
+        session = self._sessions.get(link_id)
+        if not session or not session.room_id:
+            return False, ""
+        room_meta = session.room_by_id(session.room_id)
+        pwd = self.get_remembered_room_password(link_id, session.room_id)
+        return room_password_admin_display(room_meta, remembered_password=pwd)
+
     def create_room(self, link_id: str, name: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)
         if session:
+            pwd = password.strip()
+            if pwd:
+                self._pending_create_password[link_id] = (name.strip(), pwd)
             session.create_room(name, password=password)
 
     def delete_room(self, link_id: str, room_id: str, *, host_password: str = "") -> None:
@@ -546,6 +601,9 @@ class BridgeManager:
     def join_room(self, link_id: str, room_id: str, *, password: str = "") -> None:
         session = self._sessions.get(link_id)
         if session:
+            pwd = password.strip()
+            if pwd:
+                self._pending_join_password[link_id] = (room_id, pwd)
             session.join_room(room_id, password=password)
 
     def request_rooms(self, link_id: str) -> None:

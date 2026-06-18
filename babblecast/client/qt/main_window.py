@@ -284,6 +284,7 @@ class MainWindow(QMainWindow):
             self._settings.input_volume * 100,
         )
         self._drawer.set_host_password_status(bool(self._settings.host_password))
+        self._refresh_room_password_admin()
         root.addWidget(self._drawer, 0)
         if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
             self._bridge.ensure_input_monitoring()
@@ -542,6 +543,7 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         if not self._bridge.links:
             self._status.setText(f"Offline — {reason}")
+        self._refresh_room_password_admin()
 
     def _on_error(self, link_id: str, message: str, error_code: str = "") -> None:
         link = self._bridge.get_link(link_id)
@@ -575,6 +577,15 @@ class MainWindow(QMainWindow):
             self._status.setText(f"Active server: {link.label}")
         self._bridge.request_rooms(link_id)
         self._reload_chat_log(link_id)
+        self._refresh_room_password_admin()
+
+    def _refresh_room_password_admin(self) -> None:
+        link_id = self._active_link_id
+        if not link_id:
+            self._drawer.set_room_password_display(False, "")
+            return
+        visible, text = self._bridge.admin_room_password_display(link_id)
+        self._drawer.set_room_password_display(visible, text)
 
     def _on_joined(self, link_id: str, room_id: str, room_name: str) -> None:
         self._room_by_link[link_id] = (room_id, room_name)
@@ -582,6 +593,7 @@ class MainWindow(QMainWindow):
             self._current_room_label.setText(f"In room: {room_name}")
             self._reload_chat_log(link_id)
             self._highlight_current_room(room_id)
+            self._refresh_room_password_admin()
 
     def _on_room_deleted(self, link_id: str, room_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -591,6 +603,7 @@ class MainWindow(QMainWindow):
             self._room_by_link.pop(link_id, None)
         if link_id == self._active_link_id:
             self._reload_chat_log(link_id)
+            self._refresh_room_password_admin()
 
     def _highlight_current_room(self, room_id: str) -> None:
         for i in range(self._room_list.count()):
@@ -788,6 +801,7 @@ class MainWindow(QMainWindow):
             self._room_list.addItem(item)
         if current_rid:
             self._highlight_current_room(current_rid)
+        self._refresh_room_password_admin()
 
     def _create_room(self) -> None:
         if not self._active_link_id:

@@ -599,6 +599,7 @@ class BabbleController:
         else:
             self.set_status(f"{n} server(s) connected")
         self._sync_voice_foreground()
+        self._refresh_admin_room_password()
 
     def set_active_link(self, link_id: str) -> None:
         self._active_link_id = link_id
@@ -610,6 +611,19 @@ class BabbleController:
         rooms = self._rooms.get(link_id, [])
         live.update_rooms(rooms, True, self._current_room_id(link_id))
         self._reload_chat(link_id)
+        self._refresh_admin_room_password()
+
+    def _refresh_admin_room_password(self) -> None:
+        live = self.app.screen("live")
+        panel = getattr(live, "detail_panel", None)
+        if not panel:
+            return
+        link_id = self._active_link_id
+        if not link_id:
+            panel.set_room_password_display(False, "")
+            return
+        visible, text = self._bridge.admin_room_password_display(link_id)
+        panel.set_room_password_display(visible, text)
 
     def _current_room_id(self, link_id: str) -> str:
         session = self._bridge.get_session(link_id)
@@ -627,6 +641,7 @@ class BabbleController:
             self._reload_chat(link_id)
             rooms = self._rooms.get(link_id, [])
             live.update_rooms(rooms, True, room_id)
+            self._refresh_admin_room_password()
 
     def _on_room_deleted(self, link_id: str, room_id: str) -> None:
         link = self._bridge.get_link(link_id)
@@ -637,6 +652,7 @@ class BabbleController:
             rooms = self._rooms.get(link_id, [])
             live = self.app.screen("live")
             live.update_rooms(rooms, True, self._current_room_id(link_id))
+            self._refresh_admin_room_password()
 
     def _reload_chat(self, link_id: str | None = None) -> None:
         lid = link_id or self._active_link_id
@@ -751,6 +767,8 @@ class BabbleController:
         self._rooms[link_id] = rooms
         live = self.app.screen("live")
         live.update_rooms(rooms, self._active_link_id == link_id, self._current_room_id(link_id))
+        if link_id == self._active_link_id:
+            self._refresh_admin_room_password()
 
     def join_room(self, room_id: str) -> None:
         if not self._active_link_id:

@@ -162,6 +162,16 @@ class SideDetailPanel(MDBoxLayout):
             on_toggle=lambda _e: None,
         )
         host_layout = self._host_section.body
+        self._room_pwd_label = MDLabel(
+            text="",
+            theme_text_color="Custom",
+            text_color=MUTED,
+            font_style="Caption",
+            size_hint_y=None,
+            height=0,
+            opacity=0,
+        )
+        host_layout.add_widget(self._room_pwd_label)
         self._host_pwd_status = MDLabel(
             text="Host password: not set",
             theme_text_color="Custom",
@@ -271,6 +281,13 @@ class SideDetailPanel(MDBoxLayout):
         self._mic_caption.text = f"Mic · {int(s.input_volume * 100)}%"
         self._refresh_route_ui()
         self._refresh_host_pwd_status()
+
+    def set_room_password_display(self, visible: bool, text: str) -> None:
+        if not hasattr(self, "_room_pwd_label"):
+            return
+        self._room_pwd_label.text = text if visible else ""
+        self._room_pwd_label.opacity = 1 if visible else 0
+        self._room_pwd_label.height = dp(16) if visible else 0
 
     def _refresh_host_pwd_status(self) -> None:
         if not hasattr(self, "_host_pwd_status"):

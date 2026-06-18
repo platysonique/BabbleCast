@@ -137,12 +137,17 @@ class DetailDrawer(QWidget):
 
         self._host_pwd_status = QLabel("Host password: not set")
         self._host_pwd_status.setStyleSheet("color: #565f89; font-size: 11px;")
+        self._room_pwd_label = QLabel("")
+        self._room_pwd_label.setStyleSheet("color: #7aa2f7; font-size: 11px;")
+        self._room_pwd_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._room_pwd_label.setVisible(False)
         self._host_pwd = QLineEdit()
         self._host_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self._host_pwd.setPlaceholderText("Your personal admin password")
         self._host_pwd_save = QPushButton("Save host password")
         self._host_pwd_save.clicked.connect(self._save_host_password)
         self_layout.addWidget(QLabel("Host password"))
+        self_layout.addWidget(self._room_pwd_label)
         self_layout.addWidget(self._host_pwd_status)
         self_layout.addWidget(self._host_pwd)
         self_layout.addWidget(self._host_pwd_save)
@@ -430,6 +435,10 @@ class DetailDrawer(QWidget):
         self._host_pwd_status.setText(
             "Host password: set" if is_set else "Host password: not set"
         )
+
+    def set_room_password_display(self, visible: bool, text: str) -> None:
+        self._room_pwd_label.setVisible(visible)
+        self._room_pwd_label.setText(text if visible else "")
 
     def _save_host_password(self) -> None:
         pwd = self._host_pwd.text().strip()
