@@ -17,9 +17,10 @@ def test_detail_drawer_uses_three_column_audio_row() -> None:
     assert "_master_slider" not in source
 
 
-def test_volume_knob_is_radial_dial() -> None:
+def test_volume_knob_is_custom_radial_dial() -> None:
     source = (ROOT / "babblecast" / "client" / "qt" / "volume_knob.py").read_text(
         encoding="utf-8"
     )
-    assert "QDial" in source
-    assert "setRange(0, 200)" in source
+    assert "_RadialDial" in source
+    assert 'QColor("#ffffff")' in source
+    assert "setRange(0, 200)" not in source

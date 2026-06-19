@@ -5,7 +5,6 @@ set -euo pipefail
 ROOT="@BBC_ROOT@"
 VENV="@BBC_VENV@"
 BBC="${VENV}/bin/bbc"
-PY="${VENV}/bin/python"
 
 if [[ ! -x "${BBC}" ]]; then
 	echo "bbc: missing install at ${VENV}" >&2
@@ -16,8 +15,9 @@ fi
 cd "${ROOT}"
 
 _launch_gui() {
-	# exec -a sets WM_CLASS / Wayland app id for COSMIC/GNOME dock grouping.
-	exec -a BabbleCast "${PY}" -m babblecast.cli client "$@"
+	# Do not use exec -a with python — it breaks venv site-packages detection.
+	# Dock identity comes from Qt setDesktopFileName("babblecast") in app.py.
+	exec "${BBC}" client "$@"
 }
 
 case "${1:-}" in

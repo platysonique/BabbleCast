@@ -72,22 +72,6 @@ QSlider::groove:vertical {
     background: #414868;
     border-radius: 3px;
 }
-QDial#volumeKnob {
-    background-color: #24283b;
-    color: #7aa2f7;
-}
-QDial#volumeKnob::groove {
-    background: #1a1b26;
-    border: 1px solid #414868;
-    border-radius: 32px;
-}
-QDial#volumeKnob::handle {
-    background: #ffffff;
-    border: 2px solid #e0e0e0;
-    border-radius: 6px;
-    width: 12px;
-    height: 12px;
-}
 QProgressBar {
     border: none;
     border-radius: 4px;

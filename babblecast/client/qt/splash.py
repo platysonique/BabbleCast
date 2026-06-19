@@ -62,9 +62,10 @@ class SplashScreen(QWidget):
         QApplication.processEvents()
 
     @staticmethod
-    def show_then(run_after, duration_ms: int = _DURATION_MS) -> SplashScreen:
-        splash = SplashScreen()
-        splash.show_on_primary_screen()
+    def show_then(run_after, duration_ms: int = _DURATION_MS, *, splash: SplashScreen | None = None) -> SplashScreen:
+        if splash is None:
+            splash = SplashScreen()
+            splash.show_on_primary_screen()
         QTimer.singleShot(duration_ms, lambda: _finish(splash, run_after))
         return splash
 
