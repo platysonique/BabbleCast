@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -66,11 +66,10 @@ class _RadialDial(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         inset = 6.0
-        face = QPointF(inset, inset)
         size = self.width() - inset * 2
         painter.setPen(QPen(QColor("#414868"), 2))
         painter.setBrush(QColor("#1a1b26"))
-        painter.drawEllipse(face.x(), face.y(), size, size)
+        painter.drawEllipse(QRectF(inset, inset, size, size))
 
         dot = self._dot_center()
         painter.setPen(QPen(QColor("#cccccc"), 1))
