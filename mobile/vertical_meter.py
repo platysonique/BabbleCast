@@ -87,9 +87,8 @@ class VerticalMeter(Widget):
 
             fill_h = max(0, int(th * self._level))
             if fill_h > 0:
-                fy = iy + 1 + th - fill_h - 1
                 band = max(dp(2), fill_h // 20)
-                pos_y = fy
+                pos_y = iy + 1
                 remaining = fill_h
                 while remaining > 0:
                     seg_h = min(band, remaining)
@@ -103,6 +102,6 @@ class VerticalMeter(Widget):
             Line(rectangle=(ix, iy, tw, th), width=1)
 
             if self._peak > 0.02:
-                peak_y = iy + th - int(th * self._peak)
+                peak_y = iy + int(th * self._peak)
                 Color(*(_LIT["clip"] if self._clip else _PEAK))
                 Line(points=[ix + 2, peak_y, ix + tw - 2, peak_y], width=dp(1.5))

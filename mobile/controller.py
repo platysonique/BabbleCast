@@ -106,6 +106,8 @@ class BabbleController:
         self._participant_by_composite: dict[str, dict] = {}
         self._discovery_watch = None
         self._last_server_signature: tuple[tuple[str, str, int], ...] | None = None
+        self._route_list_cache: list[tuple[str, str, bool]] | None = None
+        self._route_list_cache_at = 0.0
 
     def _alive(self) -> bool:
         return not self._closing and not self._bridge.shutting_down
@@ -388,7 +390,19 @@ class BabbleController:
         self._bridge.set_input_volume(volume)
 
     def list_audio_routes(self) -> list[tuple[str, str, bool]]:
-        return self._bridge.list_audio_routes()
+        import time
+
+        now = time.monotonic()
+        if self._route_list_cache is not None and (now - self._route_list_cache_at) < 0.75:
+            return self._route_list_cache
+        routes = self._bridge.list_audio_routes()
+        self._route_list_cache = routes
+        self._route_list_cache_at = now
+        return routes
+
+    @property
+    def audio_route_changing(self) -> bool:
+        return self._bridge.audio_route_changing
 
     def set_audio_route(self, route: str) -> None:
         self._bridge.set_audio_route(route)
@@ -482,17 +496,14 @@ class BabbleController:
     def _on_audio_route_changed(self, route: str) -> None:
         if not self._alive():
             return
+        self._route_list_cache = None
         live = self.app.screen("live")
         panel = getattr(live, "detail_panel", None)
-        if panel:
-            panel.sync_from_settings()
-            return
-        from mobile.platform_ui import is_android
-
-        if is_android():
-            settings = self.app.screen("settings")
-            if hasattr(settings, "_refresh_route_ui"):
-                settings._refresh_route_ui(self)
+        if panel and hasattr(panel, "_refresh_route_ui"):
+            panel._refresh_route_ui()
+        settings = self.app.screen("settings")
+        if hasattr(settings, "_refresh_route_ui"):
+            settings._refresh_route_ui(self)
 
     def open_user_panel(self, link_id: str, participant: dict) -> None:
         from babblecast.constants import composite_participant_key

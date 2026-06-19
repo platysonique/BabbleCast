@@ -36,6 +36,10 @@ def _run_update() -> None:
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req)], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(root)], check=True)
 
+    desktop_install = root / "packaging" / "linux" / "install-desktop.sh"
+    if desktop_install.is_file():
+        subprocess.run(["bash", str(desktop_install)], check=True)
+
     print("BabbleCast updated. Restart any running bbc windows to pick up changes.")
 
 

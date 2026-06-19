@@ -14,7 +14,7 @@ from websockets.server import WebSocketServerProtocol
 
 from babblecast.constants import DEFAULT_UDP_PORT, DEFAULT_WS_PORT, WS_PING_INTERVAL_SEC, WS_PING_TIMEOUT_SEC
 from babblecast.discovery import ServerAdvertiser
-from babblecast.network import advertise_hosts_for_settings
+from babblecast.network import advertise_hosts_for_settings, primary_lan_ipv4, same_subnet_24
 from babblecast.server.auth import check_password, make_password_verifier
 from babblecast.protocol import (
     ErrorCode,
@@ -177,6 +177,35 @@ class BabbleCastHub:
             client.udp_source = addr
             return True
         return client.udp_source == addr
+
+    def _hub_lan_ips(self) -> list[str]:
+        ips = advertise_hosts_for_settings()
+        if self.host not in ("0.0.0.0", "", "127.0.0.1") and self.host not in ips:
+            ips = [self.host, *ips]
+        return ips or [primary_lan_ipv4()]
+
+    def _peer_udp_dest(self, peer: ClientState) -> tuple[str, int] | None:
+        return peer.udp_source or peer.udp_addr
+
+    def _udp_reachable(self, peer: ClientState) -> bool:
+        dest = self._peer_udp_dest(peer)
+        if not dest:
+            return False
+        return any(same_subnet_24(dest[0], hub_ip) for hub_ip in self._hub_lan_ips())
+
+    def _schedule_ws_voice(self, peer: ClientState, data: bytes) -> None:
+        if not self._loop or not peer.ws:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._send_ws_voice(peer, data), self._loop)
+        except Exception:
+            logger.debug("WS voice relay schedule failed", exc_info=True)
+
+    async def _send_ws_voice(self, peer: ClientState, data: bytes) -> None:
+        try:
+            await peer.ws.send(data)
+        except Exception:
+            logger.debug("WS voice relay send failed", exc_info=True)
 
     async def _broadcast_room(self, room_id: str, message: str, skip: str | None = None) -> None:
         room = self._rooms.get(room_id)
@@ -705,8 +734,14 @@ class BabbleCastHub:
                 if cid == packet.sender_id:
                     continue
                 peer = self.hub._clients.get(cid)
-                if peer and peer.udp_addr:
-                    transport.sendto(data, peer.udp_addr)
+                if not peer:
+                    continue
+                if self.hub._udp_reachable(peer):
+                    dest = self.hub._peer_udp_dest(peer)
+                    if dest:
+                        transport.sendto(data, dest)
+                else:
+                    self.hub._schedule_ws_voice(peer, data)
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()

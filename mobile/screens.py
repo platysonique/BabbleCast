@@ -739,15 +739,17 @@ class SettingsScreen(MDScreen):
             self._noise_slider.value = self.noise_pct
             self._master_slider.value = self.master_pct
             self._mic_slider.value = self.mic_pct
-        if hasattr(self, "_route_buttons"):
-            app = MDApp.get_running_app()
-            if is_android() and hasattr(app, "controller") and not self._route_buttons:
-                self._build_route_buttons(app.controller)
-            elif hasattr(app, "controller"):
-                self._refresh_route_ui(app.controller)
-        app = MDApp.get_running_app()
         if is_android() and hasattr(app, "controller"):
+            from mobile.permissions import bluetooth_connect_granted, request_android_permissions
+
+            if not bluetooth_connect_granted():
+                request_android_permissions()
             app.controller.ensure_self_audio_meter()
+            if hasattr(self, "_route_buttons"):
+                if not self._route_buttons:
+                    self._build_route_buttons(app.controller)
+                else:
+                    self._refresh_route_ui(app.controller)
 
     def set_self_mic_level(self, level: float) -> None:
         meter = getattr(self, "_self_meter", None)
@@ -760,9 +762,10 @@ class SettingsScreen(MDScreen):
         from kivymd.uix.label import MDLabel
         from kivymd.uix.slider import MDSlider
         from kivymd.uix.textfield import MDTextField
+        from mobile.scroll_helpers import SliderFriendlyScrollView
 
         outer = MDBoxLayout(orientation="vertical", md_bg_color=BG, padding=dp(16), spacing=dp(8))
-        scroll = ScrollView(size_hint=(1, 1))
+        scroll = SliderFriendlyScrollView(size_hint=(1, 1))
         root = MDBoxLayout(orientation="vertical", spacing=dp(14), size_hint_y=None, padding=(0, dp(4)))
         root.bind(minimum_height=root.setter("height"))
 
@@ -926,16 +929,21 @@ class SettingsScreen(MDScreen):
     def _refresh_route_ui(self, controller) -> None:
         if not self._route_buttons:
             return
+        pending = controller.audio_route_changing
         s = controller.settings
         selected = getattr(s, "android_audio_route", "speaker")
-        labels = {rid: label for rid, label, _ in controller.list_audio_routes()}
+        routes = controller.list_audio_routes()
+        labels = {rid: label for rid, label, _ in routes}
         if self._route_label:
-            self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
-        available = {rid: ok for rid, _lbl, ok in controller.list_audio_routes()}
+            if pending:
+                self._route_label.text = "Output route: Switching…"
+            else:
+                self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
+        available = {rid: ok for rid, _lbl, ok in routes}
         for route_id, btn in self._route_buttons.items():
-            enabled = available.get(route_id, route_id != "bluetooth")
+            enabled = available.get(route_id, route_id != "bluetooth") and not pending
             btn.disabled = not enabled
-            btn.text_color = ACCENT if route_id == selected else MUTED
+            btn.text_color = ACCENT if route_id == selected and not pending else MUTED
 
     def _route_pressed(self, route_id: str) -> None:
         app = MDApp.get_running_app()

@@ -15,6 +15,7 @@ _watch_thread: threading.Thread | None = None
 _watch_stop = threading.Event()
 _broadcast_receiver = None
 _callbacks: tuple[Callable[[], None], Callable[[], None]] | None = None
+_on_availability_changed: Callable[[], None] | None = None
 _last_connected = False
 _auto_switch_on_connect = True
 
@@ -39,6 +40,8 @@ def _notify_if_changed() -> None:
     if connected == _last_connected:
         return
     _last_connected = connected
+    if _on_availability_changed is not None:
+        _dispatch(_on_availability_changed)
     if _callbacks is None:
         return
     if connected:
@@ -68,7 +71,7 @@ def _register_broadcast() -> object | None:
         disconnected_state = int(BluetoothProfile.STATE_DISCONNECTED)
 
         class BtRouteReceiver(PythonJavaClass):
-            __javimplements__ = ("android/content/BroadcastReceiver",)
+            __javainterfaces__ = ["android/content/BroadcastReceiver"]
 
             @java_method("(Landroid/content/Context;Landroid/content/Intent;)V")
             def onReceive(self, context, intent) -> None:
@@ -76,13 +79,19 @@ def _register_broadcast() -> object | None:
                     state = int(intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))
                     if state == connected_state:
                         global _last_connected
-                        if not _last_connected and _callbacks and _auto_switch_on_connect:
-                            _last_connected = True
+                        was = _last_connected
+                        _last_connected = True
+                        if not was and _on_availability_changed is not None:
+                            _dispatch(_on_availability_changed)
+                        if not was and _callbacks and _auto_switch_on_connect:
                             logger.info("Bluetooth connect broadcast — auto-switching audio route")
                             _dispatch(_callbacks[0])
                     elif state == disconnected_state:
-                        if _last_connected and _callbacks and _auto_switch_on_connect:
-                            _last_connected = False
+                        was = _last_connected
+                        _last_connected = False
+                        if was and _on_availability_changed is not None:
+                            _dispatch(_on_availability_changed)
+                        if was and _callbacks and _auto_switch_on_connect:
                             logger.info("Bluetooth disconnect broadcast — reverting audio route")
                             _dispatch(_callbacks[1])
                 except Exception:
@@ -130,16 +139,21 @@ def start_bluetooth_watch(
     on_disconnected: Callable[[], None],
     *,
     auto_switch_on_connect: bool = True,
+    on_availability_changed: Callable[[], None] | None = None,
 ) -> None:
     """Begin watching for BT headset changes until ``stop_bluetooth_watch``."""
     global _watch_thread, _callbacks, _broadcast_receiver, _last_connected, _auto_switch_on_connect
+    global _on_availability_changed
     with _watch_lock:
         stop_bluetooth_watch()
         _auto_switch_on_connect = auto_switch_on_connect
+        _on_availability_changed = on_availability_changed
         _callbacks = (on_connected, on_disconnected)
         from babblecast.audio.android_routing import get_android_router
 
         _last_connected = get_android_router().bluetooth_available()
+        if _on_availability_changed is not None:
+            _dispatch(_on_availability_changed)
         if _last_connected and auto_switch_on_connect:
             _dispatch(on_connected)
         _watch_stop.clear()
@@ -149,12 +163,13 @@ def start_bluetooth_watch(
 
 
 def stop_bluetooth_watch() -> None:
-    global _watch_thread, _callbacks, _broadcast_receiver, _last_connected
+    global _watch_thread, _callbacks, _broadcast_receiver, _last_connected, _on_availability_changed
     with _watch_lock:
         _watch_stop.set()
         thread = _watch_thread
         _watch_thread = None
         _callbacks = None
+        _on_availability_changed = None
         receiver = _broadcast_receiver
         _broadcast_receiver = None
         _last_connected = False

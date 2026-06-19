@@ -22,6 +22,17 @@ from babblecast.constants import (
 
 logger = logging.getLogger(__name__)
 
+_writes_allowed = threading.Event()
+_writes_allowed.set()
+
+
+def pause_speaker_writes() -> None:
+    _writes_allowed.clear()
+
+
+def resume_speaker_writes() -> None:
+    _writes_allowed.set()
+
 
 def _jni():
     from jnius import autoclass
@@ -288,6 +299,9 @@ class AndroidSpeakerOutput:
     def _loop(self) -> None:
         next_tick = time.monotonic()
         while self._running:
+            if not _writes_allowed.wait(timeout=FRAME_DURATION_SEC):
+                next_tick += FRAME_DURATION_SEC
+                continue
             frame = self._mix()
             pcm = (frame * 32767.0).astype(np.int16)
             self._write_pcm(pcm)
@@ -335,8 +349,16 @@ class AndroidSpeakerOutput:
     def start(self, *, route: str | None = None) -> None:
         if self._thread:
             return
+        from babblecast.audio.android_routing import get_android_router, resolve_playback_route
+
         self._route = normalize_audio_route(route or get_android_router().route)
-        get_android_router().apply(self._route)
+        router = get_android_router()
+        effective = resolve_playback_route(
+            self._route,
+            bt_hfp_connected=router.bluetooth_available(),
+            auto_switch_bt=self._route in ("auto", "bluetooth"),
+        )
+        router.apply_resolved(effective, user_route=self._route)
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioTrack = autoclass("android.media.AudioTrack")
@@ -360,7 +382,7 @@ class AndroidSpeakerOutput:
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()
-        logger.info("Android speaker output started (route=%s)", self._route)
+        logger.info("Android speaker output started (route=%s, playback=%s)", self._route, effective)
 
     def stop(self) -> None:
         self._running = False
@@ -387,9 +409,5 @@ class AndroidSpeakerOutput:
             self.set_route(device_key)
 
     def set_route(self, route: str, *, mic_restart_cb=None) -> None:
-        route = normalize_audio_route(route)
-        if route == self._route and self._thread:
-            return
-        self._route = route
-        get_android_router().apply(route, mic_restart_cb=mic_restart_cb)
-        logger.info("Android speaker route hot-swapped → %s", route)
+        self._route = normalize_audio_route(route)
+        logger.info("Android speaker route label → %s", self._route)

@@ -31,6 +31,22 @@ def record_audio_granted() -> bool:
         return False
 
 
+def bluetooth_connect_granted() -> bool:
+    try:
+        from kivy.utils import platform
+
+        if platform != "android":
+            return True
+        if _android_api_level() < 31:
+            return True
+        from android.permissions import Permission, check_permission
+
+        return bool(check_permission(Permission.BLUETOOTH_CONNECT))
+    except Exception:
+        logger.debug("BLUETOOTH_CONNECT permission check failed", exc_info=True)
+        return False
+
+
 def request_android_permissions() -> None:
     try:
         from kivy.utils import platform

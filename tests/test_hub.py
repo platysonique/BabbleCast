@@ -256,6 +256,30 @@ def test_udp_source_must_match_registered_addr() -> None:
     assert hub._register_udp_source(fresh, ("192.168.1.9", 7000))
 
 
+def test_udp_reachable_same_subnet() -> None:
+    hub = BabbleCastHub(host="192.168.1.141", ws_port=1, udp_port=2, advertise=False)
+    peer = ClientState(ws=None, client_id="p1", name="Phone")  # type: ignore[arg-type]
+    peer.udp_addr = ("192.168.1.50", 5000)
+    assert hub._udp_reachable(peer)
+
+
+def test_udp_unreachable_cross_subnet_uses_ws_path() -> None:
+    hub = BabbleCastHub(host="192.168.1.141", ws_port=1, udp_port=2, advertise=False)
+    peer = ClientState(ws=None, client_id="p1", name="Phone")  # type: ignore[arg-type]
+    peer.udp_addr = ("192.168.86.72", 5000)
+    assert not hub._udp_reachable(peer)
+    peer.udp_source = ("192.168.86.72", 5000)
+    assert not hub._udp_reachable(peer)
+
+
+def test_peer_udp_dest_prefers_learned_source() -> None:
+    hub = BabbleCastHub(host="127.0.0.1", ws_port=1, udp_port=2, advertise=False)
+    peer = ClientState(ws=None, client_id="p1", name="X")  # type: ignore[arg-type]
+    peer.udp_addr = ("10.0.0.1", 5000)
+    peer.udp_source = ("192.168.86.72", 5000)
+    assert hub._peer_udp_dest(peer) == ("192.168.86.72", 5000)
+
+
 @pytest.mark.asyncio
 async def test_protected_room_requires_password_to_join() -> None:
     hub = BabbleCastHub(host="127.0.0.1", ws_port=18779, udp_port=18780, advertise=False)

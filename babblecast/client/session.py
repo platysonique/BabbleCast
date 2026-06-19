@@ -105,6 +105,8 @@ class ClientSession:
         self._jitter_lock = threading.Lock()
         self._codec_lock = threading.Lock()
         self._rooms: list[dict[str, Any]] = []
+        self._inbound_voice_seen = False
+        self._speaker_missing_logged = False
 
     @property
     def link_id(self) -> str:
@@ -265,6 +267,34 @@ class ClientSession:
         self._udp_thread = threading.Thread(target=self._udp_recv_loop, daemon=True, name="bbc-udp-recv")
         self._udp_thread.start()
 
+    def _process_voice_datagram(self, data: bytes) -> None:
+        if self._listen_muted_getter and self._listen_muted_getter():
+            return
+        packet = VoicePacket.decode(data)
+        if not packet or packet.sender_id == self._client_id:
+            return
+        if not self._inbound_voice_seen:
+            self._inbound_voice_seen = True
+            logger.info("Inbound voice packet from %s", packet.sender_id)
+        with self._jitter_lock:
+            jb = self._jitter.setdefault(packet.sender_id, VoiceJitterBuffer())
+        payloads = jb.push(packet.sequence, packet.opus_payload)
+        speaker = self._bridge_speaker if self.is_bridge else self._speaker
+        if not speaker:
+            if not self._speaker_missing_logged:
+                self._speaker_missing_logged = True
+                logger.warning("Inbound voice dropped — speaker not ready")
+            return
+        key = self._participant_key(packet.sender_id)
+        for payload in payloads:
+            with self._codec_lock:
+                if payload is None:
+                    pcm = self._codec.decode_plc()
+                else:
+                    pcm = self._codec.decode(payload)
+            if len(pcm) == FRAME_BYTES:
+                speaker.push_pcm(key, pcm)
+
     def _udp_recv_loop(self) -> None:
         assert self._udp_sock is not None
         while self._running:
@@ -275,26 +305,7 @@ class ClientSession:
                 continue
             except OSError:
                 break
-            if self._listen_muted_getter and self._listen_muted_getter():
-                continue
-            packet = VoicePacket.decode(data)
-            if not packet or packet.sender_id == self._client_id:
-                continue
-            with self._jitter_lock:
-                jb = self._jitter.setdefault(packet.sender_id, VoiceJitterBuffer())
-            payloads = jb.push(packet.sequence, packet.opus_payload)
-            speaker = self._bridge_speaker if self.is_bridge else self._speaker
-            if not speaker:
-                continue
-            key = self._participant_key(packet.sender_id)
-            for payload in payloads:
-                with self._codec_lock:
-                    if payload is None:
-                        pcm = self._codec.decode_plc()
-                    else:
-                        pcm = self._codec.decode(payload)
-                if len(pcm) == FRAME_BYTES:
-                    speaker.push_pcm(key, pcm)
+            self._process_voice_datagram(data)
 
     async def _send(self, message: str) -> None:
         if self._ws:
@@ -422,6 +433,7 @@ class ClientSession:
             await ws.send(encode_msg(MsgType.HELLO, **hello_payload))
             async for raw in ws:
                 if isinstance(raw, bytes):
+                    self._process_voice_datagram(raw)
                     continue
                 try:
                     msg = decode_msg(raw)

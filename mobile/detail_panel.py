@@ -324,18 +324,23 @@ class SideDetailPanel(MDBoxLayout):
     def _refresh_route_ui(self) -> None:
         if not self._route_buttons:
             return
+        pending = self._controller.audio_route_changing
         s = self._controller.settings
         selected = getattr(s, "android_audio_route", "speaker")
-        labels = {rid: label for rid, label, _ in self._controller.list_audio_routes()}
+        routes = self._controller.list_audio_routes()
+        labels = {rid: label for rid, label, _ in routes}
         if self._route_label:
-            self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
-        available = {rid: ok for rid, _lbl, ok in self._controller.list_audio_routes()}
+            if pending:
+                self._route_label.text = "Output route: Switching…"
+            else:
+                self._route_label.text = f"Output route: {labels.get(selected, selected.title())}"
+        available = {rid: ok for rid, _lbl, ok in routes}
         for route_id, btn in self._route_buttons.items():
-            enabled = available.get(route_id, route_id != "bluetooth")
+            enabled = available.get(route_id, route_id != "bluetooth") and not pending
             btn.disabled = not enabled
             if enabled:
                 btn.opacity = 1.0
-                btn.text_color = ACCENT if route_id == selected else MUTED
+                btn.text_color = ACCENT if route_id == selected and not pending else MUTED
             else:
                 btn.opacity = 0.38
                 btn.text_color = MUTED

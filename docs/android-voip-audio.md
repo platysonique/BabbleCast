@@ -48,6 +48,7 @@ This is the definitive reference for BabbleCast voice on Android (Samsung 14/15,
 | Kivy main | UI, `Clock.schedule_once` callbacks only |
 | `bbc-android-audio` worker | Open AudioRecord/AudioTrack (blocking JNI) |
 | `bbc-android-mic` / `bbc-android-spk` | read/write loops |
+| `bbc-android-route` | Route JNI, write-gate coordination, deferred settings persist |
 | WS/UDP threads | Opus encode/decode, jitter buffers |
 
 **Never** call `AudioRecord.stop()` / `restart()` from a random `threading.Timer` on a BT callback — schedule mic restart on the capture thread via the bridge's main-thread deferral.
@@ -73,6 +74,35 @@ If `RECORD_AUDIO` is not granted, BabbleCast must **not** pretend the mic works.
 2. `bash scripts/verify.sh` with phone connected → logcat contains `Android mic capture started` **or** graceful `Audio unavailable`
 3. Manual: Connect → Settings mic meter moves → hear remote voice
 4. Only then: `git push` + `adb install -r` APK
+
+## Locked zones (DO NOT EDIT without explicit approval)
+
+- **Mic:** `AndroidMicCapture` entire class in `babblecast/audio/android_engine.py`
+- **Hear delivery:** `session._process_voice_datagram`, `push_pcm`, `AndroidSpeakerOutput.push_pcm`, `_mix`, hub WS/UDP voice relay
+- **pyjnius PCM:** `short[]` via `jarray("short")` — never `byte[]` cast
+
+## Routing-only zone
+
+- `android_routing.py`, `android_route_worker.py`, `bridge.set_audio_route`, UI route buttons
+- `AndroidSpeakerOutput._loop` — write-gate check only (3–5 lines)
+
+## Route hot-swap (correct behavior)
+
+- All `AudioManager` JNI on `bbc-android-route` thread
+- Kivy main thread: enqueue job + UI pending state only
+- Write gate pauses `AudioTrack.write` during route transition (~20ms gap acceptable)
+- `MODE_IN_COMMUNICATION` set once at `session_begin`, not per toggle
+- `auto` resolved to `speaker` (or `bluetooth` when HFP + auto_switch) before JNI
+
+## Route hot-swap acceptance (device)
+
+1. Connected, voice active: Earpiece → Speaker → Auto → Bluetooth (if HFP) — no freeze
+2. After each toggle: talk and hear work (user confirms)
+3. Logcat: `Android route worker applying` on `bbc-android-route`; no route JNI on main thread
+
+```bash
+adb -s RFCY81V4G9Y logcat -d -s python:I | grep -iE "route worker|audio route|communication device"
+```
 
 ## References
 

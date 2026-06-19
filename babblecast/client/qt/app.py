@@ -18,7 +18,10 @@ _ICON = _ASSETS / "icon.png"
 def run_gui() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("BabbleCast")
+    app.setApplicationDisplayName("BabbleCast")
     app.setOrganizationName("BabbleCast")
+    app.setDesktopFileName("babblecast")
+    app.setQuitOnLastWindowClosed(True)
     if _ICON.is_file():
         app.setWindowIcon(QIcon(str(_ICON)))
 
@@ -33,3 +36,7 @@ def run_gui() -> int:
 
     SplashScreen.show_then(_open_main)
     return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_gui())

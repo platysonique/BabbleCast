@@ -21,6 +21,7 @@ from babblecast.client.qt.collapsible_section import CollapsibleSection
 from babblecast.client.qt.meter_strip import MeterVolumeStrip
 from babblecast.client.qt.vertical_meter import METER_HEIGHT, VerticalMeter
 from babblecast.client.qt.tap_note_dialog import TapNoteRowLabel
+from babblecast.client.qt.volume_knob import VolumeKnob
 from babblecast.taps import get_tap_store
 
 
@@ -102,37 +103,78 @@ class DetailDrawer(QWidget):
         self._self_section = CollapsibleSection("Your audio", expanded=self_audio_expanded)
         self._self_section.toggled.connect(self._self_section_toggled)
         self_layout = self._self_section.body_layout()
-        self_layout.setSpacing(4)
+        self_layout.setSpacing(6)
+
+        audio_row = QHBoxLayout()
+        audio_row.setContentsMargins(0, 0, 0, 0)
+        audio_row.setSpacing(8)
 
         self._self_strip = MeterVolumeStrip(
             volume_label="Mic",
+            compact=True,
             on_volume=self._mic_volume_changed,
         )
-        self_layout.addWidget(self._self_strip)
+        audio_row.addWidget(self._self_strip, alignment=Qt.AlignmentFlag.AlignTop)
 
+        noise_col = QVBoxLayout()
+        noise_col.setContentsMargins(0, 0, 0, 0)
+        noise_col.setSpacing(8)
+
+        gate_box = QVBoxLayout()
+        gate_box.setSpacing(2)
+        gate_title = QLabel("Noise gate")
+        gate_title.setStyleSheet("color: #a9b1d6; font-size: 11px;")
+        gate_title.setToolTip(
+            "Level threshold — mutes audio below this (envelope gate, after suppression)"
+        )
         self._gate_slider = QSlider(Qt.Orientation.Horizontal)
         self._gate_slider.setRange(-80, 0)
         self._gate_label = QLabel("-40 dB")
+        self._gate_label.setStyleSheet("color: #565f89; font-size: 10px;")
         self._gate_slider.valueChanged.connect(self._gate_changed)
-        self_layout.addWidget(QLabel("Noise gate"))
-        self_layout.addWidget(self._gate_slider)
-        self_layout.addWidget(self._gate_label)
+        gate_box.addWidget(gate_title)
+        gate_box.addWidget(self._gate_slider)
+        gate_box.addWidget(self._gate_label)
+        noise_col.addLayout(gate_box)
 
+        noise_box = QVBoxLayout()
+        noise_box.setSpacing(2)
+        noise_title = QLabel("Noise suppression")
+        noise_title.setStyleSheet("color: #a9b1d6; font-size: 11px;")
+        noise_title.setToolTip(
+            "Spectral noise reduction — reduces steady background noise before the gate"
+        )
         self._noise_slider = QSlider(Qt.Orientation.Horizontal)
         self._noise_slider.setRange(0, 100)
         self._noise_label = QLabel("50%")
+        self._noise_label.setStyleSheet("color: #565f89; font-size: 10px;")
         self._noise_slider.valueChanged.connect(self._noise_changed)
-        self_layout.addWidget(QLabel("Noise suppression"))
-        self_layout.addWidget(self._noise_slider)
-        self_layout.addWidget(self._noise_label)
+        noise_box.addWidget(noise_title)
+        noise_box.addWidget(self._noise_slider)
+        noise_box.addWidget(self._noise_label)
+        noise_col.addLayout(noise_box)
+        noise_col.addStretch()
+        audio_row.addLayout(noise_col, stretch=1)
 
-        self._master_slider = QSlider(Qt.Orientation.Horizontal)
-        self._master_slider.setRange(0, 200)
-        self._master_label = QLabel("100%")
-        self._master_slider.valueChanged.connect(self._master_changed)
-        self_layout.addWidget(QLabel("Master output volume"))
-        self_layout.addWidget(self._master_slider)
-        self_layout.addWidget(self._master_label)
+        knob_col = QVBoxLayout()
+        knob_col.setContentsMargins(0, 0, 0, 0)
+        knob_col.setSpacing(2)
+        master_title = QLabel("Master")
+        master_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        master_title.setStyleSheet("color: #a9b1d6; font-size: 11px;")
+        self._master_knob = VolumeKnob()
+        self._master_knob.valueChanged.connect(self._master_changed)
+        knob_col.addWidget(master_title, alignment=Qt.AlignmentFlag.AlignHCenter)
+        knob_col.addWidget(
+            self._master_knob,
+            alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+        )
+        knob_col.addStretch()
+        knob_host = QWidget()
+        knob_host.setLayout(knob_col)
+        audio_row.addWidget(knob_host, alignment=Qt.AlignmentFlag.AlignTop)
+
+        self_layout.addLayout(audio_row)
 
         self._input_combo = QComboBox()
         self._input_combo.currentIndexChanged.connect(self._input_changed)
@@ -283,17 +325,16 @@ class DetailDrawer(QWidget):
     ) -> None:
         self._gate_slider.blockSignals(True)
         self._noise_slider.blockSignals(True)
-        self._master_slider.blockSignals(True)
+        self._master_knob.blockSignals(True)
         self._gate_slider.setValue(int(gate_db))
         self._gate_label.setText(f"{int(gate_db)} dB")
         self._noise_slider.setValue(int(noise_pct))
         self._noise_label.setText(f"{int(noise_pct)}%")
-        self._master_slider.setValue(int(master_pct))
-        self._master_label.setText(f"{int(master_pct)}%")
+        self._master_knob.setValue(int(master_pct))
         self._self_strip.set_volume_percent(int(mic_pct))
         self._gate_slider.blockSignals(False)
         self._noise_slider.blockSignals(False)
-        self._master_slider.blockSignals(False)
+        self._master_knob.blockSignals(False)
 
     def _self_section_toggled(self, expanded: bool) -> None:
         self.self_audio_expanded_changed.emit(expanded)
@@ -509,7 +550,6 @@ class DetailDrawer(QWidget):
         self._on_noise(value / 100.0)
 
     def _master_changed(self, value: int) -> None:
-        self._master_label.setText(f"{value}%")
         self._on_master_volume(value / 100.0)
 
     def _mic_volume_changed(self, value: int) -> None:

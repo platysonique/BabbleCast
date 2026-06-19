@@ -240,6 +240,7 @@ class BridgeManager:
             self._speaker.set_participant_muted(uid, muted)
         try:
             if platform_name() == "android":
+                from babblecast.audio.android_route_worker import get_route_worker
                 from babblecast.audio.android_routing import (
                     AUDIO_ROUTE_BLUETOOTH,
                     AUDIO_ROUTE_SPEAKER,
@@ -247,15 +248,24 @@ class BridgeManager:
                     normalize_audio_route,
                 )
 
-                initial_route = normalize_audio_route(self._settings.android_audio_route)
+                saved = normalize_audio_route(self._settings.android_audio_route)
+                auto_switch = saved in ("auto", "bluetooth")
+                initial_route = saved
                 if initial_route == AUDIO_ROUTE_BLUETOOTH and not get_android_router().bluetooth_available():
                     initial_route = AUDIO_ROUTE_SPEAKER
+                router = get_android_router()
+                get_route_worker().start(
+                    router,
+                    on_complete=self._on_route_worker_complete,
+                    auto_switch_bt=auto_switch,
+                )
+                router.session_begin()
                 self._speaker.start(route=initial_route)
             else:
                 self._speaker.start()
             self._mic.set_input_volume(self._settings.input_volume)
             self._mic.start()
-        except Exception as exc:
+        except Exception:
             logger.exception("Bridge audio startup failed")
             self._teardown_audio()
             self._audio_failed = True
@@ -279,10 +289,17 @@ class BridgeManager:
         saved = normalize_audio_route(self._settings.android_audio_route)
         auto_switch = saved in (AUDIO_ROUTE_AUTO, AUDIO_ROUTE_BLUETOOTH)
         start_bluetooth_watch(
-            on_connected=lambda: self.set_audio_route(AUDIO_ROUTE_BLUETOOTH),
-            on_disconnected=lambda: self.set_audio_route(AUDIO_ROUTE_SPEAKER),
+            on_connected=lambda: self.set_audio_route(AUDIO_ROUTE_BLUETOOTH, source="bt_watch"),
+            on_disconnected=lambda: self.set_audio_route(AUDIO_ROUTE_SPEAKER, source="bt_watch"),
             auto_switch_on_connect=auto_switch,
+            on_availability_changed=self._notify_bt_availability_changed,
         )
+
+    def _notify_bt_availability_changed(self) -> None:
+        from babblecast.audio.android_routing import normalize_audio_route
+
+        route = normalize_audio_route(self._settings.android_audio_route)
+        self._notify_audio_route_changed(route)
 
     def _notify_audio_route_changed(self, route: str) -> None:
         if self._on_audio_route_changed:
@@ -294,8 +311,12 @@ class BridgeManager:
     def _teardown_audio(self, *, fast: bool = False) -> None:
         if platform_name() == "android":
             from babblecast.audio.android_bt_watch import stop_bluetooth_watch
+            from babblecast.audio.android_route_worker import get_route_worker
+            from babblecast.audio.android_routing import get_android_router
 
             stop_bluetooth_watch()
+            get_route_worker().stop()
+            get_android_router().shutdown()
         if self._mic:
             try:
                 if fast and hasattr(self._mic, "stop_fast"):
@@ -609,18 +630,40 @@ class BridgeManager:
         if self._speaker:
             self._speaker.set_device(device_key)
 
-    def set_audio_route(self, route: str) -> None:
+    def set_audio_route(self, route: str, *, source: str = "ui") -> None:
         """Hot-swap Android speaker/earpiece/Bluetooth (no-op on desktop)."""
         if platform_name() != "android":
             return
+        from babblecast.audio.android_route_worker import RouteJob, get_route_worker
         from babblecast.audio.android_routing import normalize_audio_route
 
         route = normalize_audio_route(route)
         self._settings.android_audio_route = route
-        save_settings(self._settings)
+        if not self._audio_started:
+            save_settings(self._settings)
+            return
         if self._speaker and hasattr(self._speaker, "set_route"):
-            self._speaker.set_route(route, mic_restart_cb=self._restart_mic_if_running)
-        self._notify_audio_route_changed(route)
+            self._speaker.set_route(route)
+        get_route_worker().request_route(
+            RouteJob(route, source=source, mic_restart_cb=self._restart_mic_if_running)
+        )
+
+    @property
+    def audio_route_changing(self) -> bool:
+        if platform_name() != "android":
+            return False
+        from babblecast.audio.android_route_worker import get_route_worker
+
+        return get_route_worker().route_changing
+
+    def _on_route_worker_complete(self, user_route: str, success: bool) -> None:
+        def _finish() -> None:
+            save_settings(self._settings)
+            self._notify_audio_route_changed(user_route)
+            if not success:
+                logger.warning("Audio route change may not have applied: %s", user_route)
+
+        _defer_main_thread(0, _finish)
 
     def list_audio_routes(self) -> list[tuple[str, str, bool]]:
         if platform_name() != "android":

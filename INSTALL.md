@@ -11,7 +11,27 @@ bash packaging/linux/install.sh
 bbc
 ```
 
-`install.sh` installs system libraries (PortAudio, Opus, PyQt6 GL/X11 deps), creates a venv, installs Python packages, and puts `bbc` in `/usr/local/bin` or `~/.local/bin`.
+`install.sh` installs system libraries (PortAudio, Opus, PyQt6 GL/X11 deps), creates a venv, installs Python packages, puts `bbc` in `/usr/local/bin` or `~/.local/bin`, and installs a **BabbleCast** desktop entry that runs `bbc`.
+
+### Desktop icon only
+
+If you already ran `install.sh` and only need the app-menu launcher:
+
+```bash
+bash packaging/linux/install-desktop.sh
+```
+
+The desktop icon uses `assets/icon.png` — the same file as the Android app (`buildozer.spec`).
+
+### Update an existing checkout
+
+From inside your BabbleCast repo (git checkout with `.venv`):
+
+```bash
+bbc --update
+```
+
+This runs `git pull --ff-only`, reinstalls Python deps, and refreshes the `bbc` launcher + desktop entry. Restart any open BabbleCast windows afterward.
 
 ### Manual install
 
