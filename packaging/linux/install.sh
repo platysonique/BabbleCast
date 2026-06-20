@@ -15,7 +15,7 @@ APT_PACKAGES=(
 	libegl1
 	libxcb-cursor0
 	libxcb-xinerama0
-	librtmidi0
+	librtmidi6
 )
 
 install_system_deps() {

@@ -3,7 +3,7 @@
 #
 # Linux system libraries (Ubuntu/Debian) — run BEFORE pip:
 #   sudo apt-get install -y python3-venv python3-pip libportaudio2 libopus0 \
-#     libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0 librtmidi0
+#     libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0 librtmidi6
 #
 # Or use: bash packaging/linux/install.sh
 
