@@ -33,6 +33,10 @@ bbc --update
 
 This runs `git pull --ff-only`, reinstalls Python deps, and refreshes the `bbc` launcher + desktop entry. Restart any open BabbleCast windows afterward.
 
+### MIDI mapping (Qt desktop)
+
+Plug in any USB MIDI controller — BabbleCast opens all input ports automatically (no device picker). Right-click a volume slider, master knob, server listen/mic button, mic mute button, or peer control and choose **Map to MIDI…**, then move a knob or press a button on your controller. Use **MIDI → Mappings…** in the menu bar to review, re-learn, or unlink mappings. Linux needs `librtmidi0` (included in `install.sh`).
+
 ### Manual install
 
 ```bash
@@ -40,7 +44,7 @@ sudo apt-get update
 sudo apt-get install -y \
   python3-venv python3-pip \
   libportaudio2 libopus0 \
-  libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0
+  libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0 librtmidi0
 
 python3 -m venv .venv
 source .venv/bin/activate

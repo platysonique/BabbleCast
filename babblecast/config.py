@@ -48,6 +48,7 @@ class UserSettings:
     android_audio_route: str = "speaker"
     host_password: str = ""
     room_passwords: dict[str, str] = field(default_factory=dict)
+    midi_maps: list[dict] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -84,6 +85,7 @@ class UserSettings:
                 android_audio_route=str(raw.get("android_audio_route", "speaker")),
                 host_password=str(raw.get("host_password", "")),
                 room_passwords=dict(raw.get("room_passwords", {})),
+                midi_maps=list(raw.get("midi_maps", [])),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

@@ -93,5 +93,34 @@ class ServerLinkWidget(QWidget):
         self._mic_btn.setStyleSheet(_mute_button_style(muted))
         self._mic_btn.blockSignals(False)
 
+    def attach_midi_menus(self, midi, link_id: str, label: str) -> None:
+        from babblecast.client.qt.midi.context_menus import attach_toggle_menu
+        from babblecast.client.qt.midi.targets import MidiTarget, link_target
+
+        attach_toggle_menu(
+            self._listen_btn,
+            midi,
+            MidiTarget(
+                link_target(link_id, "listen_mute"),
+                f"{label} listen",
+                "toggle",
+                "link",
+                link_id=link_id,
+                link_label=label,
+            ),
+        )
+        attach_toggle_menu(
+            self._mic_btn,
+            midi,
+            MidiTarget(
+                link_target(link_id, "mic_mute"),
+                f"{label} mic",
+                "toggle",
+                "link",
+                link_id=link_id,
+                link_label=label,
+            ),
+        )
+
     def set_active(self, active: bool) -> None:
         self.setStyleSheet("background: #24283b;" if active else "")

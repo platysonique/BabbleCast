@@ -301,6 +301,18 @@ class MainWindow(QMainWindow):
         if self._settings.ui_panel_expanded and self._settings.ui_self_audio_expanded:
             self._bridge.ensure_input_monitoring()
 
+        from babblecast.client.qt.midi.context_menus import attach_mic_ptt_menu
+        from babblecast.client.qt.midi.mapper_service import MidiMapperService
+
+        self._midi = MidiMapperService(self._bridge, self, self._drawer, parent=self)
+        self._drawer.attach_global_midi_menus(self._midi)
+        attach_mic_ptt_menu(self._mute_btn, self._midi)
+
+        midi_menu = self.menuBar().addMenu("MIDI")
+        midi_menu.addAction("Mappings…", lambda: self._midi.open_mappings_dialog(self))
+        midi_menu.addSeparator()
+        midi_menu.addAction("Unlink all mappings", lambda: self._midi.unlink_all(self))
+
     def _load_devices(self) -> None:
         self._input_devices = list_input_devices()
         self._output_devices = list_output_devices()
@@ -518,8 +530,10 @@ class MainWindow(QMainWindow):
         self._connected_layout.insertWidget(self._connected_layout.count() - 1, w)
         if not self._active_link_id:
             self._set_active_link(link_id)
+        self._midi.register_link_targets(link_id, link_display_name(link), w)
 
     def _remove_link_widget(self, link_id: str) -> None:
+        self._midi.unregister_link_targets(link_id)
         w = self._link_widgets.pop(link_id, None)
         if w:
             w.deleteLater()
@@ -1213,12 +1227,13 @@ class MainWindow(QMainWindow):
         discovery = self._discovery
         embedded = self._embedded
         bridge = self._bridge
+        midi = self._midi
         self._embedded = None
 
         super().closeEvent(event)
         QTimer.singleShot(
             0,
-            lambda d=discovery, e=embedded, b=bridge: _shutdown_and_quit(d, e, b),
+            lambda d=discovery, e=embedded, b=bridge, m=midi: _shutdown_and_quit(d, e, b, m),
         )
 
 
@@ -1226,10 +1241,13 @@ def _shutdown_and_quit(
     discovery: ServerDiscovery,
     embedded: EmbeddedServer | None,
     bridge: BridgeManager,
+    midi=None,
 ) -> None:
     discovery.stop(wait=False)
     if embedded and embedded.running:
         embedded.stop(wait=False)
+    if midi is not None:
+        midi.shutdown()
     bridge.shutdown()
     app = QApplication.instance()
     if app is not None:

@@ -76,6 +76,8 @@ class DetailDrawer(QWidget):
         self._peer_client_id = ""
         self._peer_link_id = ""
         self._peer_is_self = False
+        self._midi = None
+        self._midi_peer_attached = False
         self._panel_width = 292
         self._panel_expanded = panel_expanded
 
@@ -336,6 +338,37 @@ class DetailDrawer(QWidget):
         self._noise_slider.blockSignals(False)
         self._master_knob.blockSignals(False)
 
+    def volume_slider(self):
+        return self._self_strip.volume_slider()
+
+    def attach_global_midi_menus(self, midi) -> None:
+        from babblecast.client.qt.midi.context_menus import attach_absolute_menu
+        from babblecast.client.qt.midi.targets import MidiTarget, global_target
+
+        self._midi = midi
+        slider = self.volume_slider()
+        if slider is not None:
+            attach_absolute_menu(
+                slider,
+                midi,
+                MidiTarget(global_target("mic_volume"), "Mic input volume", "absolute", "global"),
+            )
+        attach_absolute_menu(
+            self._master_knob,
+            midi,
+            MidiTarget(global_target("master_volume"), "Master volume", "absolute", "global"),
+        )
+        attach_absolute_menu(
+            self._gate_slider,
+            midi,
+            MidiTarget(global_target("gate"), "Noise gate", "absolute", "global"),
+        )
+        attach_absolute_menu(
+            self._noise_slider,
+            midi,
+            MidiTarget(global_target("suppression"), "Noise suppression", "absolute", "global"),
+        )
+
     def _self_section_toggled(self, expanded: bool) -> None:
         self.self_audio_expanded_changed.emit(expanded)
         self.input_monitoring_changed.emit(
@@ -438,6 +471,11 @@ class DetailDrawer(QWidget):
         self._tech_label.setText("\n".join(tech_lines))
         self._refresh_tap_list(client_id)
         self._peer_block.setVisible(True)
+        if self._midi and not is_self:
+            self._midi.ensure_peer_setters(composite, link_id, client_id, name, server_label)
+            self._midi.attach_peer_menus(
+                self, composite, link_id, client_id, name, server_label
+            )
 
     def update_peer_meter(self, voice_level: float, speaking: bool, volume: float, muted: bool) -> None:
         if not self._peer_block.isVisible():
@@ -455,6 +493,8 @@ class DetailDrawer(QWidget):
     def close_peer(self) -> None:
         if not self._peer_block.isVisible():
             return
+        if self._midi:
+            self._midi.detach_peer_menus(self)
         self._open_composite = None
         self._peer_block.setVisible(False)
         self.peer_closed.emit()

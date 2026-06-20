@@ -75,6 +75,9 @@ class MeterVolumeStrip(QWidget):
         name = parts[0].strip() if parts else self._volume_name
         self._caption.setText(f"{name} · {int(pct)}%")
 
+    def volume_slider(self):
+        return self._vol_slider
+
     def set_volume_label(self, text: str) -> None:
         if self._caption is None:
             return
