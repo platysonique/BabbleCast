@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import queue
 import re
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
+
+logger = logging.getLogger(__name__)
 
 try:
     import rtmidi
@@ -36,8 +39,12 @@ class MidiEngine(QObject):
     def list_input_ports() -> list[str]:
         if not HAS_RTMIDI:
             return []
-        mi = rtmidi.MidiIn()
-        return list(mi.get_ports())
+        try:
+            mi = rtmidi.MidiIn()
+            return list(mi.get_ports())
+        except Exception:
+            logger.exception("Failed to list MIDI input ports")
+            return []
 
     @property
     def port_name(self) -> str:
@@ -47,16 +54,25 @@ class MidiEngine(QObject):
         if not HAS_RTMIDI or not port_name:
             return False
         self.close()
-        mi = rtmidi.MidiIn()
-        ports = mi.get_ports()
-        if port_name not in ports:
+        try:
+            mi = rtmidi.MidiIn()
+            ports = mi.get_ports()
+            if port_name not in ports:
+                return False
+            mi.open_port(ports.index(port_name))
+            mi.set_callback(self._callback)
+            # python-rtmidi 1.5+ uses ignore_types(); older Assimilator samples used dont_ignore_sysex().
+            ignore = getattr(mi, "ignore_types", None)
+            if callable(ignore):
+                ignore(sysex=True, timing=True, active_sense=True)
+            self._midi_in = mi
+            self._port_name = port_name
+            return True
+        except Exception:
+            logger.exception("Failed to open MIDI port %r", port_name)
+            self._midi_in = None
+            self._port_name = ""
             return False
-        mi.open_port(ports.index(port_name))
-        mi.set_callback(self._callback)
-        mi.dont_ignore_sysex()
-        self._midi_in = mi
-        self._port_name = port_name
-        return True
 
     def close(self) -> None:
         if self._midi_in is not None:

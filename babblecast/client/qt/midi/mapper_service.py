@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
@@ -24,6 +26,8 @@ from babblecast.client.qt.midi.value_transforms import (
     toggle_fire,
 )
 from babblecast.config import get_settings, save_settings
+
+logger = logging.getLogger(__name__)
 
 
 class MidiMapperService(QWidget):
@@ -50,7 +54,10 @@ class MidiMapperService(QWidget):
         self._register_global_setters()
         self._load_from_settings()
         if HAS_RTMIDI:
-            self._multi.start()
+            try:
+                self._multi.start()
+            except Exception:
+                logger.exception("MIDI input failed to start; desktop MIDI mapping disabled")
 
     @property
     def engine(self) -> BindingEngine:
