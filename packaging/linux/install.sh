@@ -84,7 +84,7 @@ cat > "${DESKTOP_DIR}/babblecast.desktop" <<EOF
 Name=BabbleCast
 Comment=Team live communication hub
 Exec=${BBC_PATH}
-Icon=audio-input-microphone
+Icon=${ROOT}/assets/icon.png
 Terminal=false
 Type=Application
 Categories=Network;Chat;
