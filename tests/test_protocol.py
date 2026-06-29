@@ -7,12 +7,14 @@ import uuid
 import pytest
 
 from babblecast.protocol import (
+    ErrorCode,
     MsgType,
     VoicePacket,
     clamp_chat,
     clamp_name,
     decode_msg,
     encode_msg,
+    is_name_taken_error,
 )
 
 
@@ -47,3 +49,10 @@ def test_voice_packet_roundtrip() -> None:
 
 def test_voice_packet_rejects_garbage() -> None:
     assert VoicePacket.decode(b"NOPE") is None
+
+
+def test_error_message_includes_error_code() -> None:
+    raw = encode_msg(MsgType.ERROR, message="Name already in use", error_code=ErrorCode.NAME_TAKEN.value)
+    data = decode_msg(raw)
+    assert data["error_code"] == "name_taken"
+    assert is_name_taken_error(data["error_code"], data["message"])

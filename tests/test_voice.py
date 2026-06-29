@@ -9,6 +9,7 @@ import time
 from babblecast.audio.codec import OpusCodec
 from babblecast.constants import FRAME_BYTES, FRAME_SAMPLES
 from babblecast.client.session import ClientSession
+from babblecast.config import UserSettings
 from babblecast.server.embedded import EmbeddedServer
 
 
@@ -62,6 +63,8 @@ def test_voice_udp_relay_two_clients() -> None:
         listen_muted_getter=lambda: False,
         on_connected=lambda: connected_b.set(),
     )
+    session_a.update_settings(UserSettings(display_name="Voice Alice"))
+    session_b.update_settings(UserSettings(display_name="Voice Bob"))
     server = EmbeddedServer(ws_port=ws_port, udp_port=udp_port, server_name="voice-test")
     server.start()
     _wait_server(server)
@@ -73,6 +76,7 @@ def test_voice_udp_relay_two_clients() -> None:
         assert connected_b.wait(timeout=5)
         time.sleep(0.5)
 
+        session_a.send_voice_pcm(pcm)
         session_a.send_voice_pcm(pcm)
         deadline = time.time() + 3
         while time.time() < deadline and not collector.frames:

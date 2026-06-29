@@ -10,11 +10,13 @@ import time
 
 def main() -> int:
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    venv_python = root / ".venv" / "bin" / "python"
+    python_exe = str(venv_python if venv_python.exists() else sys.executable)
     venv_bbc = root / ".venv" / "bin" / "bbc"
     bbc = str(venv_bbc if venv_bbc.exists() else "bbc")
 
     print("1. pytest …")
-    r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"], cwd=root)
+    r = subprocess.run([python_exe, "-m", "pytest", "tests/", "-q"], cwd=root)
     if r.returncode != 0:
         return r.returncode
 

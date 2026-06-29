@@ -42,6 +42,14 @@ QPushButton:checked, QPushButton#pttActive {
     color: #1a1b26;
 }
 QPushButton#danger:checked { background-color: #f7768e; }
+QPushButton#drawerToggle {
+    background: transparent;
+    padding: 2px 0;
+    font-size: 11px;
+    color: #7aa2f7;
+    border-radius: 4px;
+}
+QPushButton#drawerToggle:hover { background-color: #24283b; }
 QSlider::groove:horizontal {
     height: 6px;
     background: #414868;
@@ -52,6 +60,17 @@ QSlider::handle:horizontal {
     margin: -4px 0;
     background: #7aa2f7;
     border-radius: 7px;
+}
+QSlider::handle:vertical {
+    height: 14px;
+    margin: 0 -4px;
+    background: #7aa2f7;
+    border-radius: 7px;
+}
+QSlider::groove:vertical {
+    width: 6px;
+    background: #414868;
+    border-radius: 3px;
 }
 QProgressBar {
     border: none;

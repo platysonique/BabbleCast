@@ -15,6 +15,7 @@ APT_PACKAGES=(
 	libegl1
 	libxcb-cursor0
 	libxcb-xinerama0
+	librtmidi6
 )
 
 install_system_deps() {
@@ -40,10 +41,8 @@ python3 -m venv "$VENV"
 "$VENV/bin/pip" install -e "$ROOT"
 
 WRAPPER="$(mktemp)"
-cat > "${WRAPPER}" <<EOF
-#!/usr/bin/env bash
-exec "${VENV}/bin/bbc" "\$@"
-EOF
+sed -e "s|@BBC_ROOT@|${ROOT}|g" -e "s|@BBC_VENV@|${VENV}|g" \
+	"${ROOT}/packaging/linux/bbc-wrapper.sh" > "${WRAPPER}"
 chmod +x "${WRAPPER}"
 
 BBC_PATH=""
@@ -77,18 +76,8 @@ EOF
 fi
 rm -f "${WRAPPER}"
 
-DESKTOP_DIR="${HOME}/.local/share/applications"
-mkdir -p "${DESKTOP_DIR}"
-cat > "${DESKTOP_DIR}/babblecast.desktop" <<EOF
-[Desktop Entry]
-Name=BabbleCast
-Comment=Team live communication hub
-Exec=${BBC_PATH}
-Icon=${ROOT}/assets/icon.png
-Terminal=false
-Type=Application
-Categories=Network;Chat;
-EOF
+echo "== Desktop launcher =="
+bash "${ROOT}/packaging/linux/install-desktop.sh" "${BBC_PATH}"
 
 echo "BabbleCast installed: ${BBC_PATH}"
 echo "Run: bbc"

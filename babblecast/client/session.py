@@ -6,6 +6,7 @@ import asyncio
 import logging
 import socket
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -15,9 +16,18 @@ from babblecast.audio.codec import OpusCodec
 from babblecast.audio.factory import create_mic, create_speaker
 from babblecast.audio.jitter import VoiceJitterBuffer
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor
-from babblecast.constants import FRAME_BYTES, composite_participant_key
+from babblecast.constants import (
+    DEFAULT_UDP_PORT,
+    DEFAULT_WS_PORT,
+    FRAME_BYTES,
+    VOICE_LEVEL_WS_MIN_INTERVAL_SEC,
+    WS_PING_INTERVAL_SEC,
+    WS_PING_TIMEOUT_SEC,
+    composite_participant_key,
+)
 from babblecast.config import UserSettings, get_settings, save_settings
-from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id
+from babblecast.network import is_private_lan_ipv4
+from babblecast.protocol import MsgType, VoicePacket, decode_msg, encode_msg, new_id, parse_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +38,11 @@ class ClientSession:
         on_presence: Callable[[str, list[dict]], None] | None = None,
         on_chat: Callable[[dict], None] | None = None,
         on_rooms: Callable[[list[dict]], None] | None = None,
+        on_joined: Callable[[str, str], None] | None = None,
+        on_room_deleted: Callable[[str], None] | None = None,
         on_connected: Callable[[], None] | None = None,
         on_disconnected: Callable[[str], None] | None = None,
-        on_error: Callable[[str], None] | None = None,
+        on_error: Callable[[str, str | None], None] | None = None,
         on_tap_received: Callable[[dict], None] | None = None,
         on_tap_chat: Callable[[dict], None] | None = None,
         on_tap_open: Callable[[str], None] | None = None,
@@ -38,11 +50,14 @@ class ClientSession:
         *,
         link_id: str = "",
         bridge_speaker: Any | None = None,
+        bridge_managed: bool = False,
         listen_muted_getter: Callable[[], bool] | None = None,
     ) -> None:
         self._on_presence = on_presence
         self._on_chat = on_chat
         self._on_rooms = on_rooms
+        self._on_joined = on_joined
+        self._on_room_deleted = on_room_deleted
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_error = on_error
@@ -52,6 +67,7 @@ class ClientSession:
         self._on_tap_end = on_tap_end
         self._link_id = link_id
         self._bridge_speaker = bridge_speaker
+        self._bridge_managed = bridge_managed or bool(link_id and bridge_speaker is not None)
         self._listen_muted_getter = listen_muted_getter
         self._bridge_mic_muted = False
         self._settings = get_settings()
@@ -64,7 +80,7 @@ class ClientSession:
         self._udp_sock: socket.socket | None = None
         self._udp_thread: threading.Thread | None = None
         self._udp_port = 0
-        self._server_udp_port = 8766
+        self._server_udp_port = DEFAULT_UDP_PORT
         self._sequence = 0
         self._codec = OpusCodec()
         self._gate = NoiseGate(threshold_db=self._settings.gate_threshold_db)
@@ -72,14 +88,25 @@ class ClientSession:
         self._mic = None
         self._speaker = None
         self._host = ""
-        self._ws_port = 8765
+        self._ws_port = DEFAULT_WS_PORT
+        self._password = ""
+        self._server_operator = False
+        self._is_server_operator = False
+        self._server_password_protected = False
+        self._host_password_protected = False
         self._server_name = ""
         self._user_disconnect = False
         self._audio_started = False
+        self._welcomed = False
         self._last_level_sent = 0.0
+        self._last_level_sent_at = 0.0
+        self._ws_closing = False
         self._jitter: dict[str, VoiceJitterBuffer] = {}
         self._jitter_lock = threading.Lock()
         self._codec_lock = threading.Lock()
+        self._rooms: list[dict[str, Any]] = []
+        self._inbound_voice_seen = False
+        self._speaker_missing_logged = False
 
     @property
     def link_id(self) -> str:
@@ -90,6 +117,16 @@ class ClientSession:
         return self._client_id
 
     @property
+    def rooms(self) -> list[dict[str, Any]]:
+        return list(self._rooms)
+
+    def room_by_id(self, room_id: str) -> dict[str, Any] | None:
+        for room in self._rooms:
+            if str(room.get("room_id", "")) == room_id:
+                return room
+        return None
+
+    @property
     def room_id(self) -> str | None:
         return self._room_id
 
@@ -98,12 +135,43 @@ class ClientSession:
         return self._server_name
 
     @property
+    def is_server_operator(self) -> bool:
+        return self._is_server_operator
+
+    @property
+    def server_password_protected(self) -> bool:
+        return self._server_password_protected
+
+    @property
+    def host_password_protected(self) -> bool:
+        return self._host_password_protected
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    @property
+    def ws_port(self) -> int:
+        return self._ws_port
+
+    @property
+    def local_udp_port(self) -> int:
+        return self._udp_port
+
+    @property
+    def server_udp_port(self) -> int:
+        return self._server_udp_port
+
+    @property
     def connected(self) -> bool:
         return self._running and self._ws is not None
 
     @property
     def is_bridge(self) -> bool:
-        return bool(self._link_id and self._bridge_speaker is not None)
+        return bool(self._link_id and self._bridge_managed)
+
+    def set_bridge_speaker(self, speaker: Any | None) -> None:
+        self._bridge_speaker = speaker
 
     def set_bridge_mic_muted(self, muted: bool) -> None:
         self._bridge_mic_muted = muted
@@ -123,6 +191,7 @@ class ClientSession:
             on_frame=self._on_audio_frame,
             on_level=self._on_voice_level,
         )
+        self._mic.set_input_volume(self._settings.input_volume)
         self._speaker = create_speaker(
             device_key=self._settings.output_device,
             master_volume=self._settings.output_volume,
@@ -131,6 +200,23 @@ class ClientSession:
             self._speaker.set_participant_volume(uid, vol)
         for uid, muted in self._settings.per_user_muted.items():
             self._speaker.set_participant_muted(uid, muted)
+        self._mic.set_input_volume(self._settings.input_volume)
+
+    def _schedule_send(self, coro) -> None:
+        if self._ws_closing or not self._loop or not self._ws:
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+            def _done(fut: asyncio.Future) -> None:
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+
+            future.add_done_callback(_done)
+        except RuntimeError:
+            pass
 
     def send_voice_pcm(self, pcm: bytes) -> None:
         if self._bridge_mic_muted or not self._room_id or not self._udp_sock:
@@ -162,15 +248,16 @@ class ClientSession:
         self.send_voice_pcm(pcm)
 
     def _on_voice_level(self, level: float) -> None:
-        if not self._loop or not self._ws:
+        if self._ws_closing or not self._loop or not self._ws:
+            return
+        now = time.monotonic()
+        if now - self._last_level_sent_at < VOICE_LEVEL_WS_MIN_INTERVAL_SEC:
             return
         if abs(level - self._last_level_sent) < 0.04 and (level > 0.05) == (self._last_level_sent > 0.05):
             return
         self._last_level_sent = level
-        asyncio.run_coroutine_threadsafe(
-            self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)),
-            self._loop,
-        )
+        self._last_level_sent_at = now
+        self._schedule_send(self._send(encode_msg(MsgType.VOICE_LEVEL, level=level)))
 
     def _start_udp(self) -> None:
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -179,6 +266,34 @@ class ClientSession:
         self._udp_port = self._udp_sock.getsockname()[1]
         self._udp_thread = threading.Thread(target=self._udp_recv_loop, daemon=True, name="bbc-udp-recv")
         self._udp_thread.start()
+
+    def _process_voice_datagram(self, data: bytes) -> None:
+        if self._listen_muted_getter and self._listen_muted_getter():
+            return
+        packet = VoicePacket.decode(data)
+        if not packet or packet.sender_id == self._client_id:
+            return
+        if not self._inbound_voice_seen:
+            self._inbound_voice_seen = True
+            logger.info("Inbound voice packet from %s", packet.sender_id)
+        with self._jitter_lock:
+            jb = self._jitter.setdefault(packet.sender_id, VoiceJitterBuffer())
+        payloads = jb.push(packet.sequence, packet.opus_payload)
+        speaker = self._bridge_speaker if self.is_bridge else self._speaker
+        if not speaker:
+            if not self._speaker_missing_logged:
+                self._speaker_missing_logged = True
+                logger.warning("Inbound voice dropped — speaker not ready")
+            return
+        key = self._participant_key(packet.sender_id)
+        for payload in payloads:
+            with self._codec_lock:
+                if payload is None:
+                    pcm = self._codec.decode_plc()
+                else:
+                    pcm = self._codec.decode(payload)
+            if len(pcm) == FRAME_BYTES:
+                speaker.push_pcm(key, pcm)
 
     def _udp_recv_loop(self) -> None:
         assert self._udp_sock is not None
@@ -190,42 +305,31 @@ class ClientSession:
                 continue
             except OSError:
                 break
-            if self._listen_muted_getter and self._listen_muted_getter():
-                continue
-            packet = VoicePacket.decode(data)
-            if not packet or packet.sender_id == self._client_id:
-                continue
-            with self._jitter_lock:
-                jb = self._jitter.setdefault(packet.sender_id, VoiceJitterBuffer())
-            payloads = jb.push(packet.sequence, packet.opus_payload)
-            speaker = self._bridge_speaker if self.is_bridge else self._speaker
-            if not speaker:
-                continue
-            key = self._participant_key(packet.sender_id)
-            for payload in payloads:
-                with self._codec_lock:
-                    if payload is None:
-                        pcm = self._codec.decode_plc()
-                    else:
-                        pcm = self._codec.decode(payload)
-                if len(pcm) == FRAME_BYTES:
-                    speaker.push_pcm(key, pcm)
+            self._process_voice_datagram(data)
 
     async def _send(self, message: str) -> None:
         if self._ws:
             await self._ws.send(message)
 
     async def _handle(self, data: dict[str, Any]) -> None:
+        if not self._running:
+            return
         mtype = data.get("type")
         if mtype == MsgType.WELCOME:
+            self._welcomed = True
+            self._is_server_operator = bool(data.get("server_operator"))
+            self._server_password_protected = bool(data.get("server_password_protected"))
+            self._host_password_protected = bool(data.get("host_password_protected"))
             self._client_id = str(data.get("client_id", self._client_id))
             self._room_id = str(data.get("room_id", ""))
             self._server_name = str(data.get("server_name", ""))
-            self._server_udp_port = int(data.get("udp_port", 8766))
+            self._server_udp_port = int(data.get("udp_port", DEFAULT_UDP_PORT))
             await self._send(
                 encode_msg("udp_endpoint", host=self._local_ip(), port=self._udp_port)
             )
             self._start_audio()
+            if self._on_joined and self._room_id:
+                self._on_joined(self._room_id, str(data.get("room_name", "General")))
             if self._on_connected:
                 self._on_connected()
             return
@@ -238,11 +342,18 @@ class ClientSession:
                 self._on_chat(data)
             return
         if mtype == MsgType.ROOMS:
+            self._rooms = list(data.get("rooms", []))
             if self._on_rooms:
-                self._on_rooms(list(data.get("rooms", [])))
+                self._on_rooms(self._rooms)
             return
         if mtype == MsgType.JOINED:
             self._room_id = str(data.get("room_id", ""))
+            if self._on_joined and self._room_id:
+                self._on_joined(self._room_id, str(data.get("room_name", "Room")))
+            return
+        if mtype == MsgType.ROOM_DELETED:
+            if self._on_room_deleted:
+                self._on_room_deleted(str(data.get("room_id", "")))
             return
         if mtype == MsgType.TAP_RECEIVED:
             if self._on_tap_received:
@@ -261,8 +372,12 @@ class ClientSession:
                 self._on_tap_end(str(data.get("tap_id", "")))
             return
         if mtype == MsgType.ERROR:
+            message = str(data.get("message", "Unknown error"))
+            error_code = parse_error_code(data)
             if self._on_error:
-                self._on_error(str(data.get("message", "Unknown error")))
+                self._on_error(message, error_code)
+            if not self._welcomed and self._ws:
+                await self._ws.close(1008, message)
             return
 
     def _start_audio(self) -> None:
@@ -277,18 +392,18 @@ class ClientSession:
         except Exception as exc:
             logger.exception("Failed to start audio devices")
             if self._mic:
-                self._mic.stop()
+                self._mic.stop(teardown=True)
             if self._speaker:
                 self._speaker.stop()
             self._audio_started = False
             if self._on_error:
-                self._on_error(f"Audio unavailable: {exc}")
+                self._on_error(f"Audio unavailable: {exc}", None)
 
     def _stop_audio(self) -> None:
         if self.is_bridge:
             return
         if self._mic:
-            self._mic.stop()
+            self._mic.stop(teardown=True)
         if self._speaker:
             self._speaker.stop()
         self._audio_started = False
@@ -304,11 +419,21 @@ class ClientSession:
     async def _run_ws(self) -> None:
         uri = f"ws://{self._host}:{self._ws_port}"
         name = self._settings.display_name.strip() or socket.gethostname()
-        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+        hello_payload: dict[str, Any] = {"name": name, "client_id": self._client_id}
+        if self._password:
+            hello_payload["password"] = self._password
+        if self._server_operator:
+            hello_payload["server_operator"] = True
+        async with websockets.connect(
+            uri,
+            ping_interval=WS_PING_INTERVAL_SEC,
+            ping_timeout=WS_PING_TIMEOUT_SEC,
+        ) as ws:
             self._ws = ws
-            await ws.send(encode_msg(MsgType.HELLO, name=name, client_id=self._client_id))
+            await ws.send(encode_msg(MsgType.HELLO, **hello_payload))
             async for raw in ws:
                 if isinstance(raw, bytes):
+                    self._process_voice_datagram(raw)
                     continue
                 try:
                     msg = decode_msg(raw)
@@ -316,42 +441,9 @@ class ClientSession:
                     continue
                 await self._handle(msg)
 
-    def _thread_main(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._run_ws())
-        except Exception as exc:
-            logger.exception("WebSocket session ended")
-            if self._on_disconnected and not self._user_disconnect:
-                self._on_disconnected(str(exc))
-        finally:
-            self._running = False
-            self._ws = None
-            if self._loop:
-                self._loop.close()
-            self._loop = None
-
-    def connect(self, host: str, ws_port: int = 8765) -> None:
-        if self._running:
-            self.disconnect()
-        self._user_disconnect = False
-        self._host = host
-        self._ws_port = ws_port
-        if not self.is_bridge:
-            self._settings.last_server_host = host
-            self._settings.last_server_port = ws_port
-            save_settings(self._settings)
-        self._setup_audio()
-        self._running = True
-        self._start_udp()
-        self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
-        self._thread.start()
-
-    def disconnect(self) -> None:
-        if not self._running and not self._thread:
-            return
-        self._user_disconnect = True
+    def _shutdown_transport(self, *, close_ws: bool = True) -> None:
+        """Stop network/audio I/O without firing disconnect callbacks."""
+        self._ws_closing = True
         self._running = False
         self._stop_audio()
         if self._udp_sock:
@@ -365,12 +457,86 @@ class ClientSession:
             self._udp_thread = None
         with self._jitter_lock:
             self._jitter.clear()
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
+        if close_ws and self._loop and self._ws and threading.current_thread() is not self._thread:
+            try:
+                asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop).result(timeout=2)
+            except Exception:
+                pass
+        self._ws = None
+
+    def _thread_main(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        disconnect_reason = ""
+        try:
+            self._loop.run_until_complete(self._run_ws())
+        except Exception as exc:
+            if self._welcomed:
+                logger.exception("WebSocket session ended")
+            else:
+                logger.info("Connection closed before welcome: %s", exc)
+            disconnect_reason = str(exc)
+        finally:
+            self._shutdown_transport(close_ws=False)
+            if self._loop:
+                self._loop.close()
+            self._loop = None
+            if self._on_disconnected and not self._user_disconnect:
+                self._on_disconnected(disconnect_reason or "Connection closed")
+
+    def connect(
+        self,
+        host: str,
+        ws_port: int = DEFAULT_WS_PORT,
+        password: str = "",
+        *,
+        server_operator: bool = False,
+    ) -> None:
+        if self._running:
+            self.disconnect()
+        self._user_disconnect = False
+        self._welcomed = False
+        self._ws_closing = False
+        self._is_server_operator = False
+        self._host = host.strip()
+        self._ws_port = ws_port
+        self._password = password
+        self._server_operator = server_operator
+        if not self.is_bridge:
+            self._settings.last_server_host = self._host
+            self._settings.last_server_port = ws_port
+            if is_private_lan_ipv4(self._host):
+                self._settings.last_server_underlay = self._host
+            save_settings(self._settings)
+        self._setup_audio()
+        self._running = True
+        self._start_udp()
+        self._thread = threading.Thread(target=self._thread_main, daemon=True, name="bbc-ws-client")
+        self._thread.start()
+
+    def disconnect(self, *, notify: bool = True, fast: bool = False) -> None:
+        if not self._running and not self._thread:
+            return
+        self._user_disconnect = True
+        if fast:
+            self._running = False
+            self._ws_closing = True
+            self._stop_audio()
+            if self._udp_sock:
+                try:
+                    self._udp_sock.close()
+                except OSError:
+                    pass
+                self._udp_sock = None
+            with self._jitter_lock:
+                self._jitter.clear()
+            self._thread = None
+            return
+        self._shutdown_transport()
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
-        if self._on_disconnected and self._user_disconnect:
+        if notify and self._on_disconnected:
             self._on_disconnected("Disconnected")
 
     def set_muted(self, muted: bool) -> None:
@@ -392,6 +558,12 @@ class ClientSession:
         self._suppressor.set_strength(value)
         self._settings.noise_suppression = value
         save_settings(self._settings)
+
+    def set_input_volume(self, volume: float) -> None:
+        self._settings.input_volume = max(0.0, min(2.0, volume))
+        save_settings(self._settings)
+        if self._mic:
+            self._mic.set_input_volume(self._settings.input_volume)
 
     def set_input_device(self, device_key: str | None) -> None:
         self._settings.input_device = device_key
@@ -438,18 +610,31 @@ class ClientSession:
     def end_tap(self, tap_id: str) -> None:
         self._send_async(encode_msg(MsgType.TAP_END, tap_id=tap_id))
 
-    def create_room(self, name: str) -> None:
-        self._send_async(encode_msg(MsgType.CREATE_ROOM, name=name))
+    def create_room(self, name: str, *, password: str = "") -> None:
+        payload: dict[str, Any] = {"name": name}
+        if password.strip():
+            payload["password"] = password.strip()
+        self._send_async(encode_msg(MsgType.CREATE_ROOM, **payload))
 
-    def join_room(self, room_id: str) -> None:
-        self._send_async(encode_msg(MsgType.JOIN_ROOM, room_id=room_id))
+    def delete_room(self, room_id: str, *, host_password: str = "") -> None:
+        payload: dict[str, Any] = {"room_id": room_id}
+        if host_password.strip():
+            payload["host_password"] = host_password.strip()
+        self._send_async(encode_msg(MsgType.DELETE_ROOM, **payload))
+
+    def join_room(self, room_id: str, *, password: str = "") -> None:
+        payload: dict[str, Any] = {"room_id": room_id}
+        if password.strip():
+            payload["password"] = password.strip()
+        self._send_async(encode_msg(MsgType.JOIN_ROOM, **payload))
 
     def request_rooms(self) -> None:
         self._send_async(encode_msg(MsgType.ROOM_LIST))
 
     def _send_async(self, message: str) -> None:
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
+        if self._ws_closing:
+            return
+        self._schedule_send(self._send(message))
 
     def update_settings(self, settings: UserSettings) -> None:
         self._settings = settings

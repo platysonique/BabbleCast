@@ -26,6 +26,76 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 
 ---
 
+### Android audio system — comprehensive architecture & routing research
+**Date**: 2026-06-19
+**Trigger**: Hear works (locked); app freezes on earpiece↔speaker route toggle; user demanded full Perplexity/arXiv research before any further code edits
+**Source**: WebSearch + Android official docs (developer.android.com VoIP routing, BLE audio manager guide, ANR docs) + Google Oboe Bluetooth wiki + LiveKit/react-native-webrtc production issues + Fora Soft 2026 Kotlin playbook + codebase read (`bridge.py`, `android_engine.py`, `android_routing.py`, `session.py`, `hub.py`, `docs/android-voip-audio.md`) + conversation transcript. Perplexity MCP unavailable this session; arXiv API timed out — academic papers on Android `setCommunicationDevice` are sparse; platform docs + production VoIP issues are authoritative.
+
+**End game (product)**:
+- Team live comm hub: WS control + Opus voice, multi-server bridge with ONE shared mic + ONE shared speaker
+- Non-hijacking audio: shared PortAudio on desktop; AudioRecord/AudioTrack on Android — coexist with Spotify/YouTube
+- Talk + hear both working on phone after WS voice downlink fallback for cross-subnet UDP; **mic/talk + speaker delivery paths are DO NOT TOUCH**
+
+**As-built threading (Android)** — updated 2026-06-19 after route hot-swap fix:
+| Thread | Role |
+|--------|------|
+| Kivy main | UI only; `set_audio_route()` enqueues job + pending UI state |
+| `bbc-android-audio` | Blocking open of AudioRecord/AudioTrack |
+| `bbc-android-route` | Route JNI, write-gate coordination, deferred `save_settings` |
+| `bbc-android-mic` | AudioRecord.read loop → gate/suppress → bridge fan-out |
+| `bbc-android-spk` | Mix participant queues → AudioTrack.write loop (write-gated during route apply) |
+| Per-session WS | Decode Opus → `_process_voice_datagram` → `push_pcm` |
+| Per-session UDP | Same ingest path |
+| Hub asyncio | UDP relay; WS binary fallback when `!_udp_reachable(peer)` |
+
+**External findings — threading**:
+- Android docs + ANR guide: **never block main thread** with audio policy JNI; input-dispatch ANRs = user-visible freeze
+- Kivy/pyjnius community: AudioRecord/AudioTrack read/write loops must be on worker threads (we do this for capture/playback loops)
+- **Gap**: route hot-swap (`AudioManager.setMode` + `setCommunicationDevice` + `setSpeakerphoneOn`) runs on UI thread inside `android_routing.apply()` while `bbc-android-spk` concurrently calls `AudioTrack.write` — known OEM deadlock/freeze pattern (Samsung S24/S25 class)
+
+**External findings — routing (API 31+, user on API 35)**:
+- Canonical 2024–2026 flow: `MODE_IN_COMMUNICATION` → register `AudioDeviceCallback` → `getAvailableCommunicationDevices()` → `setCommunicationDevice()` → **wait for callback** (up to 30s per Google) → `clearCommunicationDevice()` on teardown
+- `setSpeakerphoneOn` / `startBluetoothSco` deprecated Android 14; BabbleCast still uses legacy fallback when `setCommunicationDevice` returns false
+- Android 12+ auto-resets `MODE_IN_COMMUNICATION` after ~6s if misused — can fight manual routing
+- HFP/SCO for two-way voice; A2DP playback-only — BabbleCast BT watch correctly gates on HFP
+- Long-term Google recommendation: Telecom Jetpack library for VoIP apps (heavy migration)
+
+**External findings — network/voice transport**:
+- UDP uplink working + UDP downlink failing on different /24 is **classic asymmetric routing / NAT** — does NOT contradict WS "connected"
+- Industry fix ladder: STUN → symmetric RTP/latching → TURN/SBC relay → **TCP/WebSocket media fallback**
+- BabbleCast WS binary downlink is valid production pattern when UDP unreachable; trades latency/bandwidth for reachability on established socket
+
+**Freeze root cause (high confidence)**:
+- User tapped Earpiece then Speaker in Settings/detail panel → `_route_pressed` → `bridge.set_audio_route` → `speaker.set_route` → `AndroidAudioRouter.apply()` on **main thread** while active `AudioTrack.write` on `bbc-android-spk`
+- Not a hear/delivery bug; not mic bug; **routing orchestration bug**
+
+**Correct fix direction (when approved — routing layer only, NOT speaker delivery/mic)**:
+1. Serialize route changes on dedicated audio worker (same worker that opened devices), never Kivy main thread
+2. Register `AudioDeviceCallback`; update UI only after `communicationDevice` confirms (async)
+3. Coordinate with playback thread: pause/drain or gate writes during route transition (option B from research ranking)
+4. Do NOT recreate AudioTrack per toggle unless callback proves device stuck (last resort)
+5. Debounce rapid earpiece↔speaker taps; move `save_settings` off UI critical path
+6. Consider Telecom Jetpack only as long-term architectural upgrade
+
+**Code vs docs mismatches**:
+- `docs/android-voip-audio.md` says main thread = UI only — route change violates this
+- `start()` forces `auto`→speaker playback but `set_route("auto")` later calls `clearCommunicationDevice` + earpiece — intentional inconsistency undermines hear fix when user selects Auto
+
+**Implementation (2026-06-19)** — Phases 0–5 per `android_route_hot-swap` plan:
+- `android_route_worker.py`: `bbc-android-route` thread; coalesce queue; BT/UI priority (500ms); `pause_speaker_writes`/`resume_speaker_writes` around `apply_resolved`
+- `bridge.set_audio_route`: non-blocking enqueue; `save_settings` deferred to worker `on_complete` on main thread via Clock
+- `android_routing.py`: `resolve_playback_route`, `session_begin`/`shutdown`, `AudioDeviceCallback`, 3s confirmation poll
+- `android_engine.py`: write gate in `_loop` only; `set_route` label-only (no JNI)
+- UI: pending “Switching…” state; 750ms route list cache on controller
+- Tests: `test_android_route_worker.py`, `test_bridge_audio_route.py`, extended routing tests — 126 pytest pass
+- APK built + installed on RFCY81V4G9Y (`babblecast-1.0.0-arm64-v8a-debug.apk`)
+
+**Device proof**: Toggle Earpiece→Speaker→Auto during active voice on user server; logcat `adb -s RFCY81V4G9Y logcat -d -s python:I | grep -iE "route worker|audio route|communication device"` — expect `bbc-android-route` thread lines, no ANR/freeze.
+
+**Status**: RESOLVED (implementation shipped) — user voice-session route toggle confirmation pending
+
+---
+
 ### Server UDP voice relay trust model
 **Date**: 2026-06-17
 **Trigger**: Perplexity UDP security audit
@@ -40,6 +110,9 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 - No rate limiting on UDP relay
 **Relevance**: Security + reliability; LAN spoofing possible today
 **Status**: ACTIVE
+
+---
+
 
 ---
 
@@ -61,6 +134,9 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 
 ---
 
+
+---
+
 ### Android mobile client
 **Date**: 2026-06-17
 **Trigger**: User: app looks like shit; Perplexity mobile audit
@@ -78,6 +154,9 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 - Icon: user hand-cropped `assets/bbcicon.png` → `icon.png` (working tree, not pushed)
 **Relevance**: Android UX + reliability blockers
 **Status**: ACTIVE
+
+---
+
 
 ---
 
@@ -114,6 +193,86 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 
 ---
 
+### LAN discovery: cross-subnet Wi‑Fi vs wired (phone still not finding server)
+**Date**: 2026-06-17  (updated after blind-fix push `6360b0f`)
+**Trigger**: User report — phone still not discovering hosted PC; demand for Perplexity research before more fixes
+**Source**: `perplexity_research` (Android mDNS across routed /24 subnets, TCP scan fallback, LinkProperties routes, Tailscale advertise, MulticastLock; second pass on desktop-vs-phone overlay routing and VPN split-tunnel)
+**Findings**:
+- mDNS uses link-local multicast `224.0.0.251` — **not routed across /24 boundaries** even when ICMP/TCP unicast works
+- **Desktop B on same LAN as host** discovers via mDNS (same broadcast domain) and/or scan once host binds `11.2.x.x`
+- **Phone NordVPN** routes `11.2.9.1` via `tun0` (table 1050), stealing BabbleCast scan traffic off Wi‑Fi — Perplexity §3.1
+- **Host must bind overlay** (`ip route local 11.2.0.0/16 dev lo` + `ip addr` on LAN iface) or `11.2.9.x:9513` never answers even though `0.0.0.0:9513` listens
+- Phone CAN reach `192.168.1.141:9513` — proves mesh routes real LAN IP but not virtual `11.2.x` without overlay + route
+**Codebase Findings** (2026-06-17):
+- Runtime: host `babblecast_ip=11.2.9.1`, PC `192.168.1.141`, phone `192.168.86.72`
+- `adb shell ip route get 11.2.9.1` → `dev tun0` (VPN), not wlan0
+- No `overlay_net` existed — hosting did not configure OS for virtual IP
+**Resolution** (2026-06-17):
+- `babblecast/overlay_net.py` — bind `11.2.0.0/16` local + host IP on `lo` and primary LAN iface when hub advertises
+- `mobile/android_connect.py` + `babblecast/transport_probe.py` — TCP scan uses Wi‑Fi `Network.bindSocket()` so VPN does not hijack `11.2.x` probes
+- Still `11.2.x.x` scan + mDNS unchanged
+- Mesh cross-subnet may need router static route `11.2.0.0/16 → host LAN IP` (Perplexity §2.2)
+**Status**: RESOLVED (pending host restart + phone smoke test)
+
+---
+
+### Cross-subnet 11.2.x.x reachability (phone still not connecting) — Perplexity deep research
+**Date**: 2026-06-17 (evening)
+**Trigger**: User: improved lag but phone still not connecting; demand Perplexity with full code/goals context
+**Source**: `perplexity_research` (high reasoning) — custom overlay 11.2.0.0/16 across Google Wifi mesh /24 subnets, Android bindSocket vs routing, Tailscale/ZeroTier patterns
+**Findings**:
+- Binding `11.2.9.1/32` on Linux host is **necessary but not sufficient** — only affects packets that **arrive at the PC**; intermediate routers must know where 11.2.x.x lives
+- Phone `192.168.86.72` → `11.2.9.1`: kernel sends to Wi‑Fi gateway `192.168.86.1`; mesh has **no route** for 11.2.0.0/16 → packets never reach PC (verified: ping 11.2.9.1 100% loss, ping 192.168.1.141 OK, TCP 9513 to 192.168.1.141 OK from phone)
+- `Network.bindSocket()` fixes VPN hijack but **cannot create routes** to unreachable prefixes
+- Consumer Google/Nest Wifi **cannot add static routes** for 11.2.0.0/16 in normal UI
+- Proxy ARP / host-only DNAT **do not work cross-subnet** (ARP does not cross routers)
+- Correct pattern (Tailscale/ZeroTier/Hamachi): **endpoint-managed overlay** — capture 11.2.0.0/16 locally (Android `VpnService` long-term) and map to underlay LAN IP for transport
+- Pragmatic near-term: **overlay→underlay mapping** at app layer + **UDP discovery beacon** (overlay IP in UI, dial `192.168.1.141` on wire); mDNS `lan` TXT property for same-subnet; optional router static route for power users
+**Codebase Findings** (2026-06-17):
+- Prior code probed/scanned `11.2.9.1–254` over physical network — **cannot work** cross-/24 without router routes
+- Host overlay (`overlay_net.py`) correct for local accept once packets arrive
+**Resolution** (2026-06-17):
+- `babblecast/overlay_route.py` — map overlay↔underlay, `resolve_transport_host()`, persist `last_server_underlay`
+- `babblecast/discovery_beacon.py` — UDP 9515 beacon; server **unicasts** reply to `BABBLE_DISCOVER` (cross-mesh)
+- `transport_probe.py` / `session.connect` / `DiscoveredServer.connect_host` — dial underlay, keep 11.2.x.x identity
+- `network_scan.bootstrap_overlay_from_underlay()` — beacon + known underlay probe before overlay sweep
+- mDNS advertiser adds `lan` property; WELCOME includes `babblecast_ip`
+- **Long-term**: Android `VpnService` split-tunnel for 11.2.0.0/16 (Perplexity §6–7)
+**Status**: SUPERSEDED — see LAN-first pivot below
+
+---
+
+### LAN-first discovery pivot (drop 11.2.x.x overlay)
+**Date**: 2026-06-17
+**Trigger**: User approval after Perplexity research + live network proof
+**Source**: Perplexity research, `adb shell ping`, TCP probe phone→PC
+**Findings**:
+- Phone → `192.168.1.141` ping/TCP 9513 **works** across mesh subnets
+- Phone → `11.2.9.1` **100% packet loss** — mesh has no route for virtual overlay
+- mDNS does not cross `/24` boundaries on Google Wifi (by design)
+- Overlay actively **breaks** cross-subnet discovery; real LAN IPs are the correct transport
+**Resolution**:
+- Removed `overlay_net.py`, `overlay_route.py`
+- mDNS + beacon advertise **real LAN IPs**; connect dials LAN IP directly
+- `discover_lan_servers()` — UDP beacon (9515) + mesh-aware TCP probe, dedupe by IP
+- Host dialog: name + password only (no custom BabbleCast address)
+- Legacy `address.py` kept for migration tests only
+**Status**: IMPLEMENTED — pending smoke test (restart `bbc` host, NordVPN off on phone)
+
+---
+
+### Room-level password protection
+**Date**: 2026-06-17
+**Trigger**: User request — per-room boss control without admin roles
+**Resolution**:
+- `CREATE_ROOM` accepts optional `password`; creator stored as `creator_id`
+- `JOIN_ROOM` requires password when room is protected; wrong/missing password rejected
+- `DELETE_ROOM` only allowed by room creator (General/system room unchanged)
+- `RoomInfo` broadcasts `password_protected` + `creator_id`; UI shows 🔒 and prompts password only when needed
+**Status**: IMPLEMENTED
+
+---
+
 ### Test coverage gaps
 **Date**: 2026-06-17
 **Trigger**: Codebase audit
@@ -125,3 +284,73 @@ Structured findings from Perplexity + codebase cross-audit (2026-06-17).
 - No test for disconnect/teardown race
 **Relevance**: Cannot claim crash fixed without voice integration test
 **Status**: ACTIVE
+
+---
+
+
+**Date**: 2026-06-19
+**Trigger**: Hear works (locked); app freezes on earpiece↔speaker route toggle; user demanded full Perplexity/arXiv research before any further code edits
+**Source**: WebSearch + Android official docs (developer.android.com VoIP routing, BLE audio manager guide, ANR docs) + Google Oboe Bluetooth wiki + LiveKit/react-native-webrtc production issues + Fora Soft 2026 Kotlin playbook + codebase read (`bridge.py`, `android_engine.py`, `android_routing.py`, `session.py`, `hub.py`, `docs/android-voip-audio.md`) + conversation transcript. Perplexity MCP unavailable this session; arXiv API timed out — academic papers on Android `setCommunicationDevice` are sparse; platform docs + production VoIP issues are authoritative.
+
+**End game (product)**:
+- Team live comm hub: WS control + Opus voice, multi-server bridge with ONE shared mic + ONE shared speaker
+- Non-hijacking audio: shared PortAudio on desktop; AudioRecord/AudioTrack on Android — coexist with Spotify/YouTube
+- Talk + hear both working on phone after WS voice downlink fallback for cross-subnet UDP; **mic/talk + speaker delivery paths are DO NOT TOUCH**
+
+**As-built threading (Android)** — updated 2026-06-19 after route hot-swap fix:
+| Thread | Role |
+|--------|------|
+| Kivy main | UI only; `set_audio_route()` enqueues job + pending UI state |
+| `bbc-android-audio` | Blocking open of AudioRecord/AudioTrack |
+| `bbc-android-route` | Route JNI, write-gate coordination, deferred `save_settings` |
+| `bbc-android-mic` | AudioRecord.read loop → gate/suppress → bridge fan-out |
+| `bbc-android-spk` | Mix participant queues → AudioTrack.write loop (write-gated during route apply) |
+| Per-session WS | Decode Opus → `_process_voice_datagram` → `push_pcm` |
+| Per-session UDP | Same ingest path |
+| Hub asyncio | UDP relay; WS binary fallback when `!_udp_reachable(peer)` |
+
+**External findings — threading**:
+- Android docs + ANR guide: **never block main thread** with audio policy JNI; input-dispatch ANRs = user-visible freeze
+- Kivy/pyjnius community: AudioRecord/AudioTrack read/write loops must be on worker threads (we do this for capture/playback loops)
+- **Gap**: route hot-swap (`AudioManager.setMode` + `setCommunicationDevice` + `setSpeakerphoneOn`) runs on UI thread inside `android_routing.apply()` while `bbc-android-spk` concurrently calls `AudioTrack.write` — known OEM deadlock/freeze pattern (Samsung S24/S25 class)
+
+**External findings — routing (API 31+, user on API 35)**:
+- Canonical 2024–2026 flow: `MODE_IN_COMMUNICATION` → register `AudioDeviceCallback` → `getAvailableCommunicationDevices()` → `setCommunicationDevice()` → **wait for callback** (up to 30s per Google) → `clearCommunicationDevice()` on teardown
+- `setSpeakerphoneOn` / `startBluetoothSco` deprecated Android 14; BabbleCast still uses legacy fallback when `setCommunicationDevice` returns false
+- Android 12+ auto-resets `MODE_IN_COMMUNICATION` after ~6s if misused — can fight manual routing
+- HFP/SCO for two-way voice; A2DP playback-only — BabbleCast BT watch correctly gates on HFP
+- Long-term Google recommendation: Telecom Jetpack library for VoIP apps (heavy migration)
+
+**External findings — network/voice transport**:
+- UDP uplink working + UDP downlink failing on different /24 is **classic asymmetric routing / NAT** — does NOT contradict WS "connected"
+- Industry fix ladder: STUN → symmetric RTP/latching → TURN/SBC relay → **TCP/WebSocket media fallback**
+- BabbleCast WS binary downlink is valid production pattern when UDP unreachable; trades latency/bandwidth for reachability on established socket
+
+**Freeze root cause (high confidence)**:
+- User tapped Earpiece then Speaker in Settings/detail panel → `_route_pressed` → `bridge.set_audio_route` → `speaker.set_route` → `AndroidAudioRouter.apply()` on **main thread** while active `AudioTrack.write` on `bbc-android-spk`
+- Not a hear/delivery bug; not mic bug; **routing orchestration bug**
+
+**Correct fix direction (when approved — routing layer only, NOT speaker delivery/mic)**:
+1. Serialize route changes on dedicated audio worker (same worker that opened devices), never Kivy main thread
+2. Register `AudioDeviceCallback`; update UI only after `communicationDevice` confirms (async)
+3. Coordinate with playback thread: pause/drain or gate writes during route transition (option B from research ranking)
+4. Do NOT recreate AudioTrack per toggle unless callback proves device stuck (last resort)
+5. Debounce rapid earpiece↔speaker taps; move `save_settings` off UI critical path
+6. Consider Telecom Jetpack only as long-term architectural upgrade
+
+**Code vs docs mismatches**:
+- `docs/android-voip-audio.md` says main thread = UI only — route change violates this
+- `start()` forces `auto`→speaker playback but `set_route("auto")` later calls `clearCommunicationDevice` + earpiece — intentional inconsistency undermines hear fix when user selects Auto
+
+**Implementation (2026-06-19)** — Phases 0–5 per `android_route_hot-swap` plan:
+- `android_route_worker.py`: `bbc-android-route` thread; coalesce queue; BT/UI priority (500ms); `pause_speaker_writes`/`resume_speaker_writes` around `apply_resolved`
+- `bridge.set_audio_route`: non-blocking enqueue; `save_settings` deferred to worker `on_complete` on main thread via Clock
+- `android_routing.py`: `resolve_playback_route`, `session_begin`/`shutdown`, `AudioDeviceCallback`, 3s confirmation poll
+- `android_engine.py`: write gate in `_loop` only; `set_route` label-only (no JNI)
+- UI: pending “Switching…” state; 750ms route list cache on controller
+- Tests: `test_android_route_worker.py`, `test_bridge_audio_route.py`, extended routing tests — 126 pytest pass
+- APK built + installed on RFCY81V4G9Y (`babblecast-1.0.0-arm64-v8a-debug.apk`)
+
+**Device proof**: Toggle Earpiece→Speaker→Auto during active voice on user server; logcat `adb -s RFCY81V4G9Y logcat -d -s python:I | grep -iE "route worker|audio route|communication device"` — expect `bbc-android-route` thread lines, no ANR/freeze.
+
+**Status**: RESOLVED (implementation shipped) — user voice-session route toggle confirmation pending

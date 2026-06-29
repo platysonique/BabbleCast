@@ -81,10 +81,10 @@ class ParticipantDetailsDialog(QDialog):
             tap_btn = QPushButton("Tap")
             tap_btn.clicked.connect(self._do_tap)
             tap_row.addWidget(tap_btn)
-            if tapped:
-                chat_btn = QPushButton("Tap chat")
-                chat_btn.clicked.connect(self._do_tap_chat)
-                tap_row.addWidget(chat_btn)
+            chat_btn = QPushButton("Tap chat")
+            chat_btn.setToolTip("Open private tap chat (starts a tap automatically if needed)")
+            chat_btn.clicked.connect(self._do_tap_chat)
+            tap_row.addWidget(chat_btn)
             layout.addLayout(tap_row)
 
         saved = get_tap_store().all_for_peer(self._client_id)
@@ -125,7 +125,7 @@ class ParticipantDetailsDialog(QDialog):
         menu = QMenu(self)
         for tap in saved:
             mark = "✓ " if tap.done else "○ "
-            sub = menu.addMenu(f"{mark}{tap.reminder[:36]}")
+            sub = menu.addMenu(f"{mark}{tap.display_subject[:36]}")
             sub.addAction("Mark done" if not tap.done else "Mark undone").triggered.connect(
                 lambda _c=False, t=tap: get_tap_store().mark_done(t.save_id, not t.done)
             )

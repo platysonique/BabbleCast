@@ -17,10 +17,12 @@ presplash.filename = %(source.dir)s/assets/splash.png
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,kivymd==1.2.0,pyjnius,android,numpy,zeroconf,websockets,libopus,opuslib,plyer,sqlite3,openssl
 p4a.local_recipes = p4a-recipes
 
+services = Voice:mobile/voice_service.py:foreground
+
 orientation = portrait
 fullscreen = 0
 
-android.permissions = INTERNET,RECORD_AUDIO,MODIFY_AUDIO_SETTINGS,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_WIFI_MULTICAST_STATE,ACCESS_FINE_LOCATION,BLUETOOTH,BLUETOOTH_CONNECT,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MICROPHONE,WAKE_LOCK
+android.permissions = INTERNET,RECORD_AUDIO,MODIFY_AUDIO_SETTINGS,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_WIFI_MULTICAST_STATE,ACCESS_FINE_LOCATION,NEARBY_WIFI_DEVICES,BLUETOOTH,BLUETOOTH_CONNECT,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MICROPHONE,WAKE_LOCK
 android.api = 33
 android.minapi = 24
 android.ndk = 26b

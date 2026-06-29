@@ -5,16 +5,37 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
 
 from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
-from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
-from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
+from babblecast.constants import (
+    CHANNELS,
+    FRAME_BYTES,
+    FRAME_DURATION_SEC,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    VOICE_PLAYBACK_QUEUE_MAX,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _close_stream_async(stream) -> None:
+    """PortAudio stop/close can block; never call that on the Qt UI thread."""
+
+    def _worker() -> None:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            logger.debug("Async PortAudio stream close failed", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="bbc-audio-close").start()
 
 
 class MicCapture:
@@ -41,6 +62,7 @@ class MicCapture:
         self._enabled = True
         self._ptt_active = False
         self._muted = False
+        self._input_volume = 1.0
         self._lock = threading.Lock()
 
     @property
@@ -64,6 +86,9 @@ class MicCapture:
             return self._ptt_active
         return True
 
+    def set_input_volume(self, value: float) -> None:
+        self._input_volume = max(0.0, min(2.0, value))
+
     def _callback(self, indata, frames, time_info, status) -> None:
         if status:
             logger.debug("Input stream status: %s", status)
@@ -75,15 +100,14 @@ class MicCapture:
         while len(self._buffer) >= FRAME_SAMPLES:
             frame = self._buffer[:FRAME_SAMPLES]
             self._buffer = self._buffer[FRAME_SAMPLES:]
-            if not self.should_transmit():
-                if self._on_level:
-                    self._on_level(0.0)
-                continue
-            processed = self._suppressor.process(frame)
+            gained = apply_gain(frame, self._input_volume)
+            processed = self._suppressor.process(gained)
             gated, level = self._gate.process(processed)
             if self._on_level:
-                self._on_level(level if level > 0.05 else 0.0)
-            if rms_db(gated) >= self._gate.threshold_db - 3:
+                self._on_level(level_db_to_meter(rms_db(gated)))
+            if not self.should_transmit():
+                continue
+            if self._gate.is_open():
                 self._on_frame(gated.tobytes(), level)
 
     def start(self) -> None:
@@ -101,6 +125,7 @@ class MicCapture:
                     callback=self._callback,
                 )
                 self._stream.start()
+                self._enabled = True
                 logger.info("Mic capture started on device index %s (shared/non-exclusive)", device)
                 return
             except sd.PortAudioError as exc:
@@ -111,17 +136,35 @@ class MicCapture:
             raise last_error
         raise sd.PortAudioError("No input audio device available")
 
-    def stop(self) -> None:
+    def stop(self, *, teardown: bool = False) -> None:
+        with self._lock:
+            if teardown:
+                self._enabled = False
+                self._on_level = None
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        with self._lock:
+            self._buffer = np.zeros(0, dtype=np.int16)
+
+    def stop_fast(self) -> None:
+        """Silence callbacks and close the stream on a background thread (app exit)."""
+        with self._lock:
+            self._enabled = False
+            self._on_level = None
+        stream = self._stream
+        self._stream = None
+        with self._lock:
+            self._buffer = np.zeros(0, dtype=np.int16)
+        if stream is not None:
+            _close_stream_async(stream)
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key
-        was_running = self._stream is not None
-        if was_running:
+        if self._stream is not None:
             self.stop()
+            time.sleep(0.05)
             self.start()
 
 
@@ -135,7 +178,7 @@ class SpeakerOutput:
         self._device_key = device_key
         self._master_volume = master_volume
         self._stream: sd.OutputStream | None = None
-        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
+        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX)
         self._mix_lock = threading.Lock()
         self._participant_buffers: dict[str, queue.Queue[np.ndarray]] = {}
         self._participant_volumes: dict[str, float] = {}
@@ -163,7 +206,7 @@ class SpeakerOutput:
         if self._participant_muted.get(client_id, False):
             return
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=8))
+        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX))
         try:
             buf.put_nowait(arr)
         except queue.Full:
@@ -189,12 +232,26 @@ class SpeakerOutput:
         return mix
 
     def _worker_loop(self) -> None:
+        next_tick = time.monotonic()
         while self._running:
             frame = self._mix_frame()
             try:
-                self._queue.put(frame, timeout=0.05)
+                self._queue.put(frame, timeout=0.02)
             except queue.Full:
-                pass
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(frame)
+                except queue.Full:
+                    pass
+            next_tick += FRAME_DURATION_SEC
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            elif sleep_for < -FRAME_DURATION_SEC:
+                next_tick = time.monotonic()
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         try:
@@ -240,10 +297,23 @@ class SpeakerOutput:
 
     def stop(self) -> None:
         self._running = False
+        worker = self._worker
+        if worker:
+            worker.join(timeout=1.0)
+            self._worker = None
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+    def stop_fast(self) -> None:
+        """Stop mixing callbacks and close the stream on a background thread (app exit)."""
+        self._running = False
+        self._worker = None
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            _close_stream_async(stream)
 
     def set_device(self, device_key: str | None) -> None:
         self._device_key = device_key

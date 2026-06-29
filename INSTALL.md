@@ -11,7 +11,31 @@ bash packaging/linux/install.sh
 bbc
 ```
 
-`install.sh` installs system libraries (PortAudio, Opus, PyQt6 GL/X11 deps), creates a venv, installs Python packages, and puts `bbc` in `/usr/local/bin` or `~/.local/bin`.
+`install.sh` installs system libraries (PortAudio, Opus, PyQt6 GL/X11 deps), creates a venv, installs Python packages, puts `bbc` in `/usr/local/bin` or `~/.local/bin`, and installs a **BabbleCast** desktop entry that runs `bbc`.
+
+### Desktop icon only
+
+If you already ran `install.sh` and only need the app-menu launcher:
+
+```bash
+bash packaging/linux/install-desktop.sh
+```
+
+The desktop icon uses `assets/icon.png` — the same file as the Android app (`buildozer.spec`).
+
+### Update an existing checkout
+
+From inside your BabbleCast repo (git checkout with `.venv`):
+
+```bash
+bbc --update
+```
+
+This runs `git pull --ff-only`, reinstalls Python deps, and refreshes the `bbc` launcher + desktop entry. Restart any open BabbleCast windows afterward.
+
+### MIDI mapping (Qt desktop)
+
+Plug in any USB MIDI controller — BabbleCast opens all input ports automatically (no device picker). Right-click a volume slider, master knob, server listen/mic button, mic mute button, or peer control and choose **Map to MIDI…**, then move a knob or press a button on your controller. Use **MIDI → Mappings…** in the menu bar to review, re-learn, or unlink mappings. Linux needs `librtmidi6` on Ubuntu 24.04+ (included in `install.sh`).
 
 ### Manual install
 
@@ -20,7 +44,7 @@ sudo apt-get update
 sudo apt-get install -y \
   python3-venv python3-pip \
   libportaudio2 libopus0 \
-  libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0
+  libxkbcommon-x11-0 libgl1 libegl1 libxcb-cursor0 libxcb-xinerama0 librtmidi6
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -49,6 +73,8 @@ bbc server --name "My Hub"
 | mDNS discovery thread crash (`unexpected keyword argument 'zeroconf'`) | Fixed in current tree — see [docs/known-issues.md](docs/known-issues.md) |
 | `PortAudioError: Device unavailable` / ALSA errors / Opus `silk/resampler` abort | See [docs/known-issues.md](docs/known-issues.md) — PortAudio path fixed; standalone silk abort on launch still open |
 | `QMouseEvent` has no attribute `globalPos` (right-click participant) | See [docs/known-issues.md](docs/known-issues.md) — PyQt6 API; use Tap button as workaround |
+| `Mic open failed on device … Device unavailable` when changing Input mic | See [docs/known-issues.md](docs/known-issues.md) — avoid raw ALSA hw devices; use `default`/`pipewire` |
+| `WebSocket session ended` / `keepalive ping timeout` (1011) / many `_send` task errors | See [docs/known-issues.md](docs/known-issues.md) — network/server timeout; reconnect; avoid multiple `bbc` instances |
 
 ---
 

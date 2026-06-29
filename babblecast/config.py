@@ -26,14 +26,29 @@ class UserSettings:
     output_device: str | None = None
     gate_threshold_db: float = -40.0
     noise_suppression: float = 0.5
+    input_volume: float = 1.0
     output_volume: float = 1.0
-    ptt_key: str = "space"
-    last_server_host: str = "127.0.0.1"
-    last_server_port: int = 8765
+    ptt_key: str = "alt+."
+    last_server_host: str = ""
+    last_server_port: int = 9513
+    last_server_underlay: str = ""
     hosted_server_name: str = ""
+    babblecast_ip: str = ""
+    babblecast_custom_address: bool = False
+    babblecast_address_suffix: str = ""
     per_user_volumes: dict[str, float] = field(default_factory=dict)
     per_user_muted: dict[str, bool] = field(default_factory=dict)
     window_geometry: list[int] | None = None
+    ui_panel_expanded: bool = False
+    ui_self_audio_expanded: bool = False
+    skip_clear_chat_confirm: bool = False
+    skip_tap_note_save_confirm: bool = False
+    skip_tap_delete_confirm: bool = False
+    skip_disconnect_confirm: bool = False
+    android_audio_route: str = "speaker"
+    host_password: str = ""
+    room_passwords: dict[str, str] = field(default_factory=dict)
+    midi_maps: list[dict] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> UserSettings:
@@ -48,14 +63,29 @@ class UserSettings:
                 output_device=raw.get("output_device"),
                 gate_threshold_db=float(raw.get("gate_threshold_db", -40.0)),
                 noise_suppression=float(raw.get("noise_suppression", 0.5)),
+                input_volume=float(raw.get("input_volume", 1.0)),
                 output_volume=float(raw.get("output_volume", 1.0)),
-                ptt_key=str(raw.get("ptt_key", "space")),
-                last_server_host=str(raw.get("last_server_host", "127.0.0.1")),
-                last_server_port=int(raw.get("last_server_port", 8765)),
+                ptt_key=str(raw.get("ptt_key", "alt+.")),
+                skip_clear_chat_confirm=bool(raw.get("skip_clear_chat_confirm", False)),
+                skip_tap_note_save_confirm=bool(raw.get("skip_tap_note_save_confirm", False)),
+                skip_tap_delete_confirm=bool(raw.get("skip_tap_delete_confirm", False)),
+                last_server_host=str(raw.get("last_server_host", "")),
+                last_server_port=int(raw.get("last_server_port", 9513)),
+                last_server_underlay=str(raw.get("last_server_underlay", "")),
                 hosted_server_name=str(raw.get("hosted_server_name", "")),
+                babblecast_ip=str(raw.get("babblecast_ip", "")),
+                babblecast_custom_address=bool(raw.get("babblecast_custom_address", False)),
+                babblecast_address_suffix=str(raw.get("babblecast_address_suffix", "")),
                 per_user_volumes=dict(raw.get("per_user_volumes", {})),
                 per_user_muted={k: bool(v) for k, v in raw.get("per_user_muted", {}).items()},
                 window_geometry=raw.get("window_geometry"),
+                ui_panel_expanded=bool(raw.get("ui_panel_expanded", False)),
+                ui_self_audio_expanded=bool(raw.get("ui_self_audio_expanded", False)),
+                skip_disconnect_confirm=bool(raw.get("skip_disconnect_confirm", False)),
+                android_audio_route=str(raw.get("android_audio_route", "speaker")),
+                host_password=str(raw.get("host_password", "")),
+                room_passwords=dict(raw.get("room_passwords", {})),
+                midi_maps=list(raw.get("midi_maps", [])),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()

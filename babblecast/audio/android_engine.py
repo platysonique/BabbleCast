@@ -5,19 +5,79 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 
 import numpy as np
 
-from babblecast.audio.processing import NoiseGate, NoiseSuppressor, rms_db
-from babblecast.constants import CHANNELS, FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
+from babblecast.audio.android_routing import get_android_router, normalize_audio_route
+from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
+from babblecast.constants import (
+    CHANNELS,
+    FRAME_BYTES,
+    FRAME_DURATION_SEC,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    VOICE_PLAYBACK_QUEUE_MAX,
+)
 
 logger = logging.getLogger(__name__)
+
+_writes_allowed = threading.Event()
+_writes_allowed.set()
+
+
+def pause_speaker_writes() -> None:
+    _writes_allowed.clear()
+
+
+def resume_speaker_writes() -> None:
+    _writes_allowed.set()
 
 
 def _jni():
     from jnius import autoclass
 
     return autoclass
+
+
+def _java_short_array(size: int):
+    """Allocate Java short[] — primitive arrays have no public constructors in pyjnius."""
+    if size <= 0:
+        size = 1
+    try:
+        from jnius import jarray
+
+        return jarray("short")(size)
+    except Exception:
+        pass
+    try:
+        autoclass = _jni()
+        jarray_cls = autoclass("java.lang.reflect.Array")
+        short_type = autoclass("java.lang.Short").TYPE
+        return jarray_cls.newInstance(short_type, size)
+    except Exception:
+        logger.exception("Failed to allocate Java short[] (size=%s)", size)
+        raise
+
+
+def _short_array_to_numpy(j_buf, n: int) -> np.ndarray:
+    """Copy n samples from Java short[] into NumPy int16."""
+    if n <= 0:
+        return np.zeros(0, dtype=np.int16)
+    try:
+        return np.array(j_buf[:n], dtype=np.int16)
+    except Exception:
+        return np.fromiter((int(j_buf[i]) for i in range(n)), dtype=np.int16, count=n)
+
+
+def _numpy_to_short_array(j_buf, pcm: np.ndarray) -> None:
+    """Copy int16 PCM into Java short[] for AudioTrack.write."""
+    n = len(pcm)
+    try:
+        j_buf[:n] = pcm.tolist()
+    except Exception:
+        for i in range(n):
+            j_buf[i] = int(pcm[i])
 
 
 class AndroidMicCapture:
@@ -35,9 +95,13 @@ class AndroidMicCapture:
         self._on_level = on_level
         self._muted = False
         self._ptt_active = False
+        self._input_volume = 1.0
         self._running = False
         self._thread: threading.Thread | None = None
         self._record = None
+        self._read_j_buf = None
+        self._read_short_count = 0
+        self._read_failures = 0
 
     @property
     def muted(self) -> bool:
@@ -60,27 +124,32 @@ class AndroidMicCapture:
             return self._ptt_active
         return True
 
+    def set_input_volume(self, value: float) -> None:
+        self._input_volume = max(0.0, min(2.0, value))
+
     def _loop(self) -> None:
-        buf_size = FRAME_SAMPLES * 4
-        data = bytearray(buf_size)
+        assert self._read_j_buf is not None
+        short_count = self._read_short_count
         while self._running:
-            n = self._record.read(data, 0, buf_size)
+            n = int(self._record.read(self._read_j_buf, 0, short_count))
             if n <= 0:
+                self._read_failures += 1
+                if self._read_failures <= 5:
+                    logger.warning("AudioRecord.read returned %d", n)
                 continue
-            samples = np.frombuffer(bytes(data[:n]), dtype=np.int16)
+            samples = _short_array_to_numpy(self._read_j_buf, n)
             if len(samples) < FRAME_SAMPLES:
                 continue
             for i in range(0, len(samples) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
                 frame = samples[i : i + FRAME_SAMPLES]
-                if not self.should_transmit():
-                    if self._on_level:
-                        self._on_level(0.0)
-                    continue
-                processed = self._suppressor.process(frame.copy())
+                gained = apply_gain(frame, self._input_volume)
+                processed = self._suppressor.process(gained.copy())
                 gated, level = self._gate.process(processed)
                 if self._on_level:
-                    self._on_level(level if level > 0.05 else 0.0)
-                if rms_db(gated) >= self._gate.threshold_db - 3:
+                    self._on_level(level_db_to_meter(rms_db(gated)))
+                if not self.should_transmit():
+                    continue
+                if self._gate.is_open():
                     self._on_frame(gated.tobytes(), level)
 
     def start(self) -> None:
@@ -89,7 +158,7 @@ class AndroidMicCapture:
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioRecord = autoclass("android.media.AudioRecord")
-        MediaRecorder = autoclass("android.media.MediaRecorder")
+        AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
         min_buf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -98,7 +167,7 @@ class AndroidMicCapture:
         if min_buf <= 0:
             raise RuntimeError(f"AudioRecord.getMinBufferSize failed: {min_buf}")
         self._record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            AudioSource.VOICE_COMMUNICATION,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -106,14 +175,24 @@ class AndroidMicCapture:
         )
         if self._record.getState() != 1:  # STATE_INITIALIZED
             raise RuntimeError("AudioRecord failed to initialize")
+        self._read_short_count = max(FRAME_SAMPLES, min_buf // 2)
+        self._read_j_buf = _java_short_array(self._read_short_count)
+        self._read_failures = 0
         self._record.startRecording()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-mic")
         self._thread.start()
         logger.info("Android mic capture started")
 
-    def stop(self) -> None:
+    def stop(self, *, teardown: bool = False) -> None:
         self._running = False
+        if teardown:
+            self._on_level = None
+        if self._record:
+            try:
+                self._record.stopRecording()
+            except Exception:
+                pass
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
@@ -124,9 +203,22 @@ class AndroidMicCapture:
             except Exception:
                 pass
             self._record = None
+        self._read_j_buf = None
 
     def set_device(self, device_key: str | None) -> None:
         pass
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def restart(self) -> None:
+        if not self._running:
+            return
+        on_level = self._on_level
+        self.stop()
+        self._on_level = on_level
+        self.start()
 
 
 class AndroidSpeakerOutput:
@@ -138,6 +230,10 @@ class AndroidSpeakerOutput:
         self._track = None
         self._running = False
         self._thread: threading.Thread | None = None
+        self._route = normalize_audio_route(None)
+        self._write_failures = 0
+        self._first_pcm_keys: set[str] = set()
+        self._write_j_buf = None
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
@@ -158,8 +254,11 @@ class AndroidSpeakerOutput:
             return
         if self._participant_muted.get(client_id, False):
             return
+        if client_id not in self._first_pcm_keys:
+            self._first_pcm_keys.add(client_id)
+            logger.info("Android speaker received first voice frame for %s", client_id)
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=8))
+        buf = self._participant_buffers.setdefault(client_id, queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX))
         try:
             buf.put_nowait(arr)
         except queue.Full:
@@ -183,41 +282,115 @@ class AndroidSpeakerOutput:
             mix[:n] += chunk[:n] * vol
         return np.clip(mix * self._master_volume, -1.0, 1.0)
 
+    def _write_pcm(self, pcm: np.ndarray) -> None:
+        if self._write_j_buf is None:
+            self._write_j_buf = _java_short_array(FRAME_SAMPLES)
+        _numpy_to_short_array(self._write_j_buf, pcm)
+        written = int(self._track.write(self._write_j_buf, 0, FRAME_SAMPLES))
+        if written < 0:
+            self._write_failures += 1
+            if self._write_failures <= 5 or self._write_failures % 200 == 0:
+                logger.warning("AudioTrack.write failed (%s): %d", self._write_failures, written)
+        elif written == 0:
+            self._write_failures += 1
+            if self._write_failures <= 3:
+                logger.warning("AudioTrack.write returned 0 samples")
+
     def _loop(self) -> None:
-        pcm = (np.zeros(FRAME_SAMPLES, dtype=np.float32)).astype(np.int16)
+        next_tick = time.monotonic()
         while self._running:
+            if not _writes_allowed.wait(timeout=FRAME_DURATION_SEC):
+                next_tick += FRAME_DURATION_SEC
+                continue
             frame = self._mix()
             pcm = (frame * 32767.0).astype(np.int16)
-            self._track.write(pcm.tobytes(), 0, len(pcm) * 2)
+            self._write_pcm(pcm)
+            next_tick += FRAME_DURATION_SEC
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            elif sleep_for < -FRAME_DURATION_SEC:
+                next_tick = time.monotonic()
 
-    def start(self) -> None:
+    def _create_track(self, autoclass, AudioFormat, AudioTrack, min_buf: int):
+        """Prefer AudioAttributes (VoIP) over legacy STREAM_VOICE_CALL → earpiece."""
+        try:
+            AudioAttributes = autoclass("android.media.AudioAttributes")
+            AudioAttributesBuilder = autoclass("android.media.AudioAttributes$Builder")
+            AudioFormatBuilder = autoclass("android.media.AudioFormat$Builder")
+            attrs_builder = AudioAttributesBuilder()
+            attrs_builder.setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            attrs_builder.setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            attrs = attrs_builder.build()
+            fmt_builder = AudioFormatBuilder()
+            fmt_builder.setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            fmt_builder.setSampleRate(SAMPLE_RATE)
+            fmt_builder.setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+            fmt = fmt_builder.build()
+            return AudioTrack(
+                attrs,
+                fmt,
+                min_buf * 2,
+                AudioTrack.MODE_STREAM,
+                0,
+            )
+        except Exception:
+            logger.debug("AudioAttributes AudioTrack failed; falling back to legacy stream type", exc_info=True)
+            AudioManager = autoclass("android.media.AudioManager")
+            return AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                min_buf * 2,
+                AudioTrack.MODE_STREAM,
+            )
+
+    def start(self, *, route: str | None = None) -> None:
         if self._thread:
             return
+        from babblecast.audio.android_routing import get_android_router, resolve_playback_route
+
+        self._route = normalize_audio_route(route or get_android_router().route)
+        router = get_android_router()
+        effective = resolve_playback_route(
+            self._route,
+            bt_hfp_connected=router.bluetooth_available(),
+            auto_switch_bt=self._route in ("auto", "bluetooth"),
+        )
+        router.apply_resolved(effective, user_route=self._route)
         autoclass = _jni()
         AudioFormat = autoclass("android.media.AudioFormat")
         AudioTrack = autoclass("android.media.AudioTrack")
-        AudioManager = autoclass("android.media.AudioManager")
         min_buf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-        self._track = AudioTrack(
-            AudioManager.STREAM_VOICE_CALL,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            min_buf * 2,
-            AudioTrack.MODE_STREAM,
-        )
+        if min_buf <= 0:
+            raise RuntimeError(f"AudioTrack.getMinBufferSize failed: {min_buf}")
+        self._track = self._create_track(autoclass, AudioFormat, AudioTrack, min_buf)
+        try:
+            self._track.setVolume(1.0)
+        except Exception:
+            logger.debug("AudioTrack.setVolume unavailable", exc_info=True)
         self._track.play()
+        play_state = int(getattr(self._track, "getPlayState", lambda: 3)())
+        if play_state != 3:  # PLAYSTATE_PLAYING
+            logger.warning("AudioTrack not in PLAYING state after play(): %s", play_state)
+        self._write_j_buf = _java_short_array(FRAME_SAMPLES)
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="bbc-android-spk")
         self._thread.start()
-        logger.info("Android speaker output started")
+        logger.info("Android speaker output started (route=%s, playback=%s)", self._route, effective)
 
     def stop(self) -> None:
         self._running = False
+        if self._track:
+            try:
+                self._track.pause()
+            except Exception:
+                pass
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
@@ -228,6 +401,13 @@ class AndroidSpeakerOutput:
             except Exception:
                 pass
             self._track = None
+        self._write_j_buf = None
+        get_android_router().shutdown()
 
     def set_device(self, device_key: str | None) -> None:
-        pass
+        if device_key:
+            self.set_route(device_key)
+
+    def set_route(self, route: str, *, mic_restart_cb=None) -> None:
+        self._route = normalize_audio_route(route)
+        logger.info("Android speaker route label → %s", self._route)
