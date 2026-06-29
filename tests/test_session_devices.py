@@ -42,11 +42,12 @@ def test_list_output_devices_curated() -> None:
 
 
 def test_resolve_output_system_default_to_analog() -> None:
+    import sounddevice as sd
+
     idx = resolve_output_device(SYSTEM_DEFAULT_KEY)
     assert idx is not None
-    candidates = list_raw_output_candidates()
-    names = dict(candidates)
-    assert idx in names
+    name = str(sd.query_devices(idx)["name"]).lower()
+    assert name in {"pipewire", "pulse", "default"} or "analog" in name
 
 
 def test_resolve_session_device_index_prefers_analog() -> None:

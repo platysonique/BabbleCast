@@ -6,8 +6,10 @@ import logging
 from collections.abc import Iterator
 
 from babblecast.audio.devices import (
+    device_supports_output_rate,
     list_raw_input_candidates,
     list_raw_output_candidates,
+    list_session_output_routes,
     resolve_input_device,
     resolve_output_device,
 )
@@ -15,7 +17,10 @@ from babblecast.audio.session_devices import (
     SYSTEM_DEFAULT_KEY,
     device_name_from_key,
     normalize_device_key,
+    query_linux_session_output,
+    session_matches_device_name,
 )
+from babblecast.constants import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,12 @@ def _ordered_indices(
 ) -> Iterator[int]:
     seen: set[int] = set()
     key = normalize_device_key(preferred_key, output=output)
+
+    if output and key == SYSTEM_DEFAULT_KEY:
+        for idx, _name in list_session_output_routes():
+            if device_supports_output_rate(idx, SAMPLE_RATE) and idx not in seen:
+                seen.add(idx)
+                yield idx
 
     resolved = (
         resolve_output_device(key) if output else resolve_input_device(key)
@@ -45,15 +56,11 @@ def _ordered_indices(
                 if dev_name == name and idx not in seen:
                     seen.add(idx)
                     yield idx
-
-    session_fallback = (
-        resolve_output_device(SYSTEM_DEFAULT_KEY)
-        if output
-        else resolve_input_device(SYSTEM_DEFAULT_KEY)
-    )
-    if session_fallback is not None and session_fallback not in seen:
-        seen.add(session_fallback)
-        yield session_fallback
+        if output and name and session_matches_device_name(name, query_linux_session_output()):
+            for idx, _route in list_session_output_routes():
+                if device_supports_output_rate(idx, SAMPLE_RATE) and idx not in seen:
+                    seen.add(idx)
+                    yield idx
 
     candidates = (
         list_raw_output_candidates() if output else list_raw_input_candidates()

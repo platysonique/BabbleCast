@@ -189,6 +189,8 @@ def _score_device_for_session(
         score += 100
     if "hdmi" in sink_lower and "hdmi" in dev_lower:
         score += 100
+    if output and "hdmi" in dev_lower and "analog" in sink_lower:
+        score -= 120
     if "usb" in sink_lower and "usb" in dev_lower:
         score += 100
     if "bluetooth" in sink_lower and "blue" in dev_lower:

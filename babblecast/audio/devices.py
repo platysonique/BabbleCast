@@ -17,6 +17,20 @@ from babblecast.audio.session_devices import (
     query_linux_session_input,
     query_linux_session_output,
 )
+from babblecast.constants import CHANNELS, SAMPLE_RATE
+
+
+def device_supports_output_rate(device_index: int, sample_rate: int) -> bool:
+    try:
+        sd.check_output_settings(
+            device=device_index,
+            channels=CHANNELS,
+            samplerate=sample_rate,
+            dtype="float32",
+        )
+        return True
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True)
@@ -211,6 +225,15 @@ def list_session_input_routes() -> list[tuple[int, str]]:
     return routes
 
 
+def list_session_output_routes() -> list[tuple[int, str]]:
+    """PipeWire/Pulse virtual playback endpoints (follow OS default sink)."""
+    routes: list[tuple[int, str]] = []
+    for d in _raw_output_devices():
+        if d.name.lower() in SESSION_ROUTE_NAMES:
+            routes.append((d.index, d.name))
+    return routes
+
+
 def _match_device_index_by_key(
     devices: list[AudioDevice],
     storage_key: str | None,
@@ -251,6 +274,9 @@ def resolve_output_device(storage_key: str | None) -> int | None:
 
     key = normalize_device_key(storage_key, output=True)
     if key == SYSTEM_DEFAULT_KEY:
+        for idx, _name in list_session_output_routes():
+            if device_supports_output_rate(idx, SAMPLE_RATE):
+                return idx
         return resolve_session_device_index(
             list_raw_output_candidates(),
             output=True,
