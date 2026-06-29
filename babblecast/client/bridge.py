@@ -77,6 +77,8 @@ class BridgeManager:
         on_local_mic_level: Callable[[float], None] | None = None,
         on_audio_route_changed: Callable[[str], None] | None = None,
         on_audio_ready: Callable[[], None] | None = None,
+        on_output_device_changed: Callable[[str, str], None] | None = None,
+        on_input_device_changed: Callable[[str, str], None] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._on_link_connected = on_link_connected
@@ -94,6 +96,8 @@ class BridgeManager:
         self._on_local_mic_level = on_local_mic_level
         self._on_audio_route_changed = on_audio_route_changed
         self._on_audio_ready = on_audio_ready
+        self._on_output_device_changed = on_output_device_changed
+        self._on_input_device_changed = on_input_device_changed
         self._local_mic_level = 0.0
         self._last_ws_level_sent = 0.0
         self._pending_create_password: dict[str, tuple[str, str]] = {}
@@ -275,7 +279,64 @@ class BridgeManager:
         self._attach_bridge_speaker_to_sessions()
         if platform_name() == "android":
             self._start_android_bt_watch()
+        else:
+            self._notify_output_device_active()
+            self._notify_input_device_active()
         return True
+
+    def _mic_input_label(self) -> str:
+        from babblecast.audio.session_devices import (
+            SYSTEM_DEFAULT_KEY,
+            friendly_name_for_portaudio_device,
+            query_linux_session_input,
+        )
+
+        if self._mic and getattr(self._mic, "active_route_kind", "").startswith("session:"):
+            session = query_linux_session_input()
+            if session and session.description:
+                return session.description
+        if self._mic and getattr(self._mic, "active_device_name", ""):
+            return friendly_name_for_portaudio_device(self._mic.active_device_name)
+        key = self._settings.input_device or SYSTEM_DEFAULT_KEY
+        if key == SYSTEM_DEFAULT_KEY:
+            session = query_linux_session_input()
+            return session.description if session else "System default"
+        from babblecast.audio.session_devices import device_name_from_key
+
+        name = device_name_from_key(key)
+        return friendly_name_for_portaudio_device(name) if name else ""
+
+    def _notify_input_device_active(self) -> None:
+        if not self._on_input_device_changed:
+            return
+        from babblecast.audio.session_devices import SYSTEM_DEFAULT_KEY
+
+        key = self._settings.input_device or SYSTEM_DEFAULT_KEY
+        try:
+            self._on_input_device_changed(key, self._mic_input_label())
+        except RuntimeError:
+            pass
+
+    def _notify_output_device_active(self) -> None:
+        from babblecast.audio.session_devices import (
+            SYSTEM_DEFAULT_KEY,
+            friendly_name_for_portaudio_device,
+            query_linux_session_output,
+        )
+
+        if not self._on_output_device_changed:
+            return
+        key = self._settings.output_device or SYSTEM_DEFAULT_KEY
+        label = ""
+        if self._speaker and getattr(self._speaker, "active_device_name", ""):
+            label = friendly_name_for_portaudio_device(self._speaker.active_device_name)
+        elif key == SYSTEM_DEFAULT_KEY:
+            session = query_linux_session_output()
+            label = session.description if session else "System default"
+        try:
+            self._on_output_device_changed(key, label)
+        except RuntimeError:
+            pass
 
     def _start_android_bt_watch(self) -> None:
         from babblecast.audio.android_bt_watch import start_bluetooth_watch
@@ -619,16 +680,67 @@ class BridgeManager:
             self._mic.set_input_volume(self._settings.input_volume)
 
     def set_input_device(self, device_key: str | None) -> None:
+        from babblecast.audio.session_devices import normalize_device_key
+
+        device_key = normalize_device_key(device_key, output=False)
         self._settings.input_device = device_key
         save_settings(self._settings)
         if self._mic:
-            self._mic.set_device(device_key)
+            try:
+                self._mic.set_device(device_key)
+            except Exception:
+                logger.exception("Input device switch failed")
+                if self._on_error:
+                    self._on_error(
+                        "",
+                        "Could not switch microphone — check audio settings and retry.",
+                        "input_device",
+                    )
+                return
+        if self._on_input_device_changed:
+            from babblecast.audio.session_devices import SYSTEM_DEFAULT_KEY
+
+            self._on_input_device_changed(
+                device_key or SYSTEM_DEFAULT_KEY,
+                self._mic_input_label(),
+            )
 
     def set_output_device(self, device_key: str | None) -> None:
+        from babblecast.audio.session_devices import (
+            SYSTEM_DEFAULT_KEY,
+            device_name_from_key,
+            friendly_name_for_portaudio_device,
+            normalize_device_key,
+            query_linux_session_output,
+        )
+
+        device_key = normalize_device_key(device_key, output=True)
         self._settings.output_device = device_key
         save_settings(self._settings)
+        label = ""
         if self._speaker:
-            self._speaker.set_device(device_key)
+            try:
+                self._speaker.set_device(device_key)
+            except Exception:
+                logger.exception("Output device switch failed")
+                if self._on_error:
+                    self._on_error(
+                        "",
+                        "Could not switch speaker device — check audio settings and retry.",
+                        "output_device",
+                    )
+                return
+            if getattr(self._speaker, "active_device_name", ""):
+                label = friendly_name_for_portaudio_device(self._speaker.active_device_name)
+        if not label:
+            if device_key == SYSTEM_DEFAULT_KEY:
+                session = query_linux_session_output()
+                label = session.description if session else "System default"
+            else:
+                name = device_name_from_key(device_key)
+                label = friendly_name_for_portaudio_device(name) if name else ""
+        if self._on_output_device_changed:
+            self._on_output_device_changed(device_key or SYSTEM_DEFAULT_KEY, label)
 
     def set_audio_route(self, route: str, *, source: str = "ui") -> None:
         """Hot-swap Android speaker/earpiece/Bluetooth (no-op on desktop)."""

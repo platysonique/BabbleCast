@@ -11,8 +11,10 @@ from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 
-from babblecast.audio.portaudio import iter_input_device_indices, iter_output_device_indices
+from babblecast.audio.input_routing import iter_mic_open_candidates
+from babblecast.audio.portaudio import iter_output_device_indices
 from babblecast.audio.processing import NoiseGate, NoiseSuppressor, apply_gain, level_db_to_meter, rms_db
+from babblecast.audio.resample import native_frame_samples, resample_mono_to_48k
 from babblecast.constants import (
     CHANNELS,
     FRAME_BYTES,
@@ -63,6 +65,10 @@ class MicCapture:
         self._ptt_active = False
         self._muted = False
         self._input_volume = 1.0
+        self._capture_rate = SAMPLE_RATE
+        self._active_device_index: int | None = None
+        self._active_device_name = ""
+        self._active_route_kind = ""
         self._lock = threading.Lock()
 
     @property
@@ -89,6 +95,33 @@ class MicCapture:
     def set_input_volume(self, value: float) -> None:
         self._input_volume = max(0.0, min(2.0, value))
 
+    @property
+    def active_device_index(self) -> int | None:
+        return self._active_device_index
+
+    @property
+    def active_device_name(self) -> str:
+        return self._active_device_name
+
+    @property
+    def active_route_kind(self) -> str:
+        return self._active_route_kind
+
+    @property
+    def capture_rate(self) -> int:
+        return self._capture_rate
+
+    def _process_frame(self, frame: np.ndarray) -> None:
+        gained = apply_gain(frame, self._input_volume)
+        processed = self._suppressor.process(gained)
+        gated, level = self._gate.process(processed)
+        if self._on_level:
+            self._on_level(level_db_to_meter(rms_db(gated)))
+        if not self.should_transmit():
+            return
+        if self._gate.is_open():
+            self._on_frame(gated.tobytes(), level)
+
     def _callback(self, indata, frames, time_info, status) -> None:
         if status:
             logger.debug("Input stream status: %s", status)
@@ -97,40 +130,61 @@ class MicCapture:
         mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
         samples = (mono * 32767.0).astype(np.int16) if mono.dtype == np.float32 else mono.astype(np.int16)
         self._buffer = np.concatenate([self._buffer, samples])
-        while len(self._buffer) >= FRAME_SAMPLES:
-            frame = self._buffer[:FRAME_SAMPLES]
-            self._buffer = self._buffer[FRAME_SAMPLES:]
-            gained = apply_gain(frame, self._input_volume)
-            processed = self._suppressor.process(gained)
-            gated, level = self._gate.process(processed)
-            if self._on_level:
-                self._on_level(level_db_to_meter(rms_db(gated)))
-            if not self.should_transmit():
-                continue
-            if self._gate.is_open():
-                self._on_frame(gated.tobytes(), level)
+        if self._capture_rate == SAMPLE_RATE:
+            while len(self._buffer) >= FRAME_SAMPLES:
+                frame = self._buffer[:FRAME_SAMPLES]
+                self._buffer = self._buffer[FRAME_SAMPLES:]
+                self._process_frame(frame)
+            return
+        native_need = native_frame_samples(self._capture_rate)
+        while len(self._buffer) >= native_need:
+            chunk = self._buffer[:native_need]
+            self._buffer = self._buffer[native_need:]
+            frame = resample_mono_to_48k(chunk, self._capture_rate)
+            self._process_frame(frame)
 
     def start(self) -> None:
         if self._stream is not None:
             return
         last_error: Exception | None = None
-        for device in iter_input_device_indices(self._device_key):
+        for candidate in iter_mic_open_candidates(self._device_key):
+            blocksize = max(FRAME_SAMPLES // 2, candidate.sample_rate // 100)
             try:
+                self._capture_rate = candidate.sample_rate
                 self._stream = sd.InputStream(
-                    device=device,
+                    device=candidate.device_index,
                     channels=CHANNELS,
-                    samplerate=SAMPLE_RATE,
-                    blocksize=FRAME_SAMPLES // 2,
+                    samplerate=candidate.sample_rate,
+                    blocksize=blocksize,
                     dtype="float32",
                     callback=self._callback,
                 )
                 self._stream.start()
                 self._enabled = True
-                logger.info("Mic capture started on device index %s (shared/non-exclusive)", device)
+                self._active_device_index = candidate.device_index
+                self._active_route_kind = candidate.route_kind
+                try:
+                    self._active_device_name = str(
+                        sd.query_devices(candidate.device_index)["name"]
+                    )
+                except Exception:
+                    self._active_device_name = f"device {candidate.device_index}"
+                logger.info(
+                    "Mic capture started on device index %s @ %s Hz (%s, shared/non-exclusive)",
+                    candidate.device_index,
+                    candidate.sample_rate,
+                    candidate.route_kind,
+                )
                 return
             except sd.PortAudioError as exc:
                 last_error = exc
-                logger.warning("Mic open failed on device %s: %s", device, exc)
+                logger.warning(
+                    "Mic open failed on device %s @ %s Hz (%s): %s",
+                    candidate.device_index,
+                    candidate.sample_rate,
+                    candidate.route_kind,
+                    exc,
+                )
                 self._stream = None
         if last_error:
             raise last_error
@@ -145,6 +199,10 @@ class MicCapture:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        self._active_device_index = None
+        self._active_device_name = ""
+        self._active_route_kind = ""
+        self._capture_rate = SAMPLE_RATE
         with self._lock:
             self._buffer = np.zeros(0, dtype=np.int16)
 
@@ -178,6 +236,8 @@ class SpeakerOutput:
         self._device_key = device_key
         self._master_volume = master_volume
         self._stream: sd.OutputStream | None = None
+        self._active_device_index: int | None = None
+        self._active_device_name: str = ""
         self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=VOICE_PLAYBACK_QUEUE_MAX)
         self._mix_lock = threading.Lock()
         self._participant_buffers: dict[str, queue.Queue[np.ndarray]] = {}
@@ -188,6 +248,14 @@ class SpeakerOutput:
 
     def set_master_volume(self, value: float) -> None:
         self._master_volume = max(0.0, min(2.0, value))
+
+    @property
+    def active_device_index(self) -> int | None:
+        return self._active_device_index
+
+    @property
+    def active_device_name(self) -> str:
+        return self._active_device_name
 
     def set_participant_volume(self, client_id: str, volume: float) -> None:
         self._participant_volumes[client_id] = max(0.0, min(2.0, volume))
@@ -281,6 +349,11 @@ class SpeakerOutput:
                     callback=self._callback,
                 )
                 self._stream.start()
+                self._active_device_index = device
+                try:
+                    self._active_device_name = str(sd.query_devices(device)["name"])
+                except Exception:
+                    self._active_device_name = f"device {device}"
                 logger.info("Speaker output started on device index %s (shared/non-exclusive)", device)
                 return
             except sd.PortAudioError as exc:
@@ -305,6 +378,8 @@ class SpeakerOutput:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        self._active_device_index = None
+        self._active_device_name = ""
 
     def stop_fast(self) -> None:
         """Stop mixing callbacks and close the stream on a background thread (app exit)."""
@@ -320,5 +395,6 @@ class SpeakerOutput:
         was_running = self._stream is not None
         if was_running:
             self.stop()
+            time.sleep(0.05)
             self.start()
 

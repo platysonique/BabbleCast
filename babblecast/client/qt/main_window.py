@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from babblecast.client.qt.confirm_dialog import ConfirmCheckboxDialog
 
 from babblecast.audio.devices import list_input_devices, list_output_devices
+from babblecast.audio.session_devices import normalize_device_key
 from babblecast.client.bridge import BridgeManager
 from babblecast.client.qt.credentials_dialog import (
     ConnectCredentialsDialog,
@@ -92,6 +93,8 @@ class _UiSignals(QObject):
     embedded_failed = pyqtSignal(str)
     embedded_stopped = pyqtSignal()
     local_mic_level = pyqtSignal(float)
+    output_device_active = pyqtSignal(str, str)
+    input_device_active = pyqtSignal(str, str)
 
 
 class MainWindow(QMainWindow):
@@ -120,6 +123,8 @@ class MainWindow(QMainWindow):
         self._ui.embedded_failed.connect(self._on_embedded_failed)
         self._ui.embedded_stopped.connect(self._on_embedded_stopped)
         self._ui.local_mic_level.connect(self._on_local_mic_level)
+        self._ui.output_device_active.connect(self._on_output_device_active)
+        self._ui.input_device_active.connect(self._on_input_device_active)
 
         self._bridge = BridgeManager(
             on_link_connected=lambda lid: self._ui.link_connected.emit(lid),
@@ -135,6 +140,12 @@ class MainWindow(QMainWindow):
             on_tap_open=lambda lid, tid: self._ui.tap_open.emit(lid, tid),
             on_tap_end=lambda lid, tid: self._ui.tap_end.emit(lid, tid),
             on_local_mic_level=lambda lvl: self._ui.local_mic_level.emit(lvl),
+            on_output_device_changed=lambda key, label: self._ui.output_device_active.emit(
+                key, label
+            ),
+            on_input_device_changed=lambda key, label: self._ui.input_device_active.emit(
+                key, label
+            ),
         )
         self._embedded: EmbeddedServer | None = None
         self._discovery = ServerDiscovery(on_update=lambda s: self._ui.servers_found.emit(s))
@@ -317,13 +328,25 @@ class MainWindow(QMainWindow):
         self._input_devices = list_input_devices()
         self._output_devices = list_output_devices()
         sel_in = sel_out = 0
+        in_key = normalize_device_key(self._settings.input_device, output=False)
+        out_key = normalize_device_key(self._settings.output_device, output=True)
         for i, dev in enumerate(self._input_devices):
-            if self._settings.input_device == dev.storage_key:
+            if dev.storage_key == in_key:
                 sel_in = i
         for i, dev in enumerate(self._output_devices):
-            if self._settings.output_device == dev.storage_key:
+            if dev.storage_key == out_key:
                 sel_out = i
         self._drawer.populate_devices(self._input_devices, self._output_devices, sel_in, sel_out)
+
+    def _on_output_device_active(self, _key: str, label: str) -> None:
+        if self._closing:
+            return
+        self._drawer.set_active_output_label(label)
+
+    def _on_input_device_active(self, _key: str, label: str) -> None:
+        if self._closing:
+            return
+        self._drawer.set_active_input_label(label)
 
     def _on_local_mic_level(self, level: float) -> None:
         if self._closing:
@@ -609,6 +632,12 @@ class MainWindow(QMainWindow):
         self._refresh_room_password_admin()
 
     def _on_error(self, link_id: str, message: str, error_code: str = "") -> None:
+        if error_code == "output_device":
+            QMessageBox.warning(self, "BabbleCast — speaker device", message)
+            return
+        if error_code == "input_device":
+            QMessageBox.warning(self, "BabbleCast — microphone", message)
+            return
         link = self._bridge.get_link(link_id)
         label = link.label if link else link_id
         code = error_code or None

@@ -9,6 +9,7 @@ from typing import Any
 
 
 from babblecast.paths import app_config_dir
+from babblecast.audio.session_devices import migrate_settings_devices
 
 
 def _config_dir(*, create: bool = False) -> Path:
@@ -57,7 +58,7 @@ class UserSettings:
             return cls()
         try:
             raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-            return cls(
+            settings = cls(
                 display_name=str(raw.get("display_name", "")),
                 input_device=raw.get("input_device"),
                 output_device=raw.get("output_device"),
@@ -87,6 +88,15 @@ class UserSettings:
                 room_passwords=dict(raw.get("room_passwords", {})),
                 midi_maps=list(raw.get("midi_maps", [])),
             )
+            new_in, new_out = migrate_settings_devices(
+                settings.input_device,
+                settings.output_device,
+            )
+            if new_in != settings.input_device or new_out != settings.output_device:
+                settings.input_device = new_in
+                settings.output_device = new_out
+                settings.save()
+            return settings
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()
 

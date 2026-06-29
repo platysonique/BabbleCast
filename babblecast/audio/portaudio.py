@@ -5,52 +5,68 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 
-import sounddevice as sd
-
-from babblecast.audio.devices import list_input_devices, list_output_devices
+from babblecast.audio.devices import (
+    list_raw_input_candidates,
+    list_raw_output_candidates,
+    resolve_input_device,
+    resolve_output_device,
+)
+from babblecast.audio.session_devices import (
+    SYSTEM_DEFAULT_KEY,
+    device_name_from_key,
+    normalize_device_key,
+)
 
 logger = logging.getLogger(__name__)
 
-_HOST_API_PREFERENCE = ("pipewire", "pulse", "alsa", "jack")
-
-
-def _host_rank(host_api: str) -> int:
-    lower = host_api.lower()
-    for i, name in enumerate(_HOST_API_PREFERENCE):
-        if name in lower:
-            return i
-    return len(_HOST_API_PREFERENCE)
-
 
 def _ordered_indices(
-    devices,
     preferred_key: str | None,
     *,
-    default_attr: str,
+    output: bool,
 ) -> Iterator[int]:
     seen: set[int] = set()
-    if preferred_key:
-        for d in devices:
-            if d.storage_key == preferred_key or preferred_key.endswith(d.name):
-                if d.index not in seen:
-                    seen.add(d.index)
-                    yield d.index
-    defaults = [d for d in devices if getattr(d, default_attr)]
-    defaults.sort(key=lambda d: _host_rank(d.host_api))
-    for d in defaults:
-        if d.index not in seen:
-            seen.add(d.index)
-            yield d.index
-    ranked = sorted(devices, key=lambda d: (_host_rank(d.host_api), d.index))
-    for d in ranked:
-        if d.index not in seen:
-            seen.add(d.index)
-            yield d.index
+    key = normalize_device_key(preferred_key, output=output)
+
+    resolved = (
+        resolve_output_device(key) if output else resolve_input_device(key)
+    )
+    if resolved is not None and resolved not in seen:
+        seen.add(resolved)
+        yield resolved
+
+    if key != SYSTEM_DEFAULT_KEY:
+        name = device_name_from_key(key)
+        candidates = (
+            list_raw_output_candidates() if output else list_raw_input_candidates()
+        )
+        if name:
+            for idx, dev_name in candidates:
+                if dev_name == name and idx not in seen:
+                    seen.add(idx)
+                    yield idx
+
+    session_fallback = (
+        resolve_output_device(SYSTEM_DEFAULT_KEY)
+        if output
+        else resolve_input_device(SYSTEM_DEFAULT_KEY)
+    )
+    if session_fallback is not None and session_fallback not in seen:
+        seen.add(session_fallback)
+        yield session_fallback
+
+    candidates = (
+        list_raw_output_candidates() if output else list_raw_input_candidates()
+    )
+    for idx, _name in sorted(candidates, key=lambda item: item[0]):
+        if idx not in seen:
+            seen.add(idx)
+            yield idx
 
 
 def iter_input_device_indices(preferred_key: str | None) -> Iterator[int]:
-    yield from _ordered_indices(list_input_devices(), preferred_key, default_attr="is_default_input")
+    yield from _ordered_indices(preferred_key, output=False)
 
 
 def iter_output_device_indices(preferred_key: str | None) -> Iterator[int]:
-    yield from _ordered_indices(list_output_devices(), preferred_key, default_attr="is_default_output")
+    yield from _ordered_indices(preferred_key, output=True)

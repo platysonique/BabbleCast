@@ -184,8 +184,16 @@ class DetailDrawer(QWidget):
         self._output_combo.currentIndexChanged.connect(self._output_changed)
         self_layout.addWidget(QLabel("Microphone device"))
         self_layout.addWidget(self._input_combo)
+        self._input_active = QLabel("")
+        self._input_active.setStyleSheet("color: #7aa2f7; font-size: 10px;")
+        self._input_active.setWordWrap(True)
+        self_layout.addWidget(self._input_active)
         self_layout.addWidget(QLabel("Speaker device"))
         self_layout.addWidget(self._output_combo)
+        self._output_active = QLabel("")
+        self._output_active.setStyleSheet("color: #7aa2f7; font-size: 10px;")
+        self._output_active.setWordWrap(True)
+        self_layout.addWidget(self._output_active)
 
         self._host_pwd_status = QLabel("Host password: not set")
         self._host_pwd_status.setStyleSheet("color: #565f89; font-size: 11px;")
@@ -390,6 +398,18 @@ class DetailDrawer(QWidget):
             self._output_combo.setCurrentIndex(min(sel_out, len(outputs) - 1))
         self._input_combo.blockSignals(False)
         self._output_combo.blockSignals(False)
+
+    def set_active_input_label(self, text: str) -> None:
+        if text:
+            self._input_active.setText(f"Listening on: {text}")
+        else:
+            self._input_active.setText("")
+
+    def set_active_output_label(self, text: str) -> None:
+        if text:
+            self._output_active.setText(f"Playing on: {text}")
+        else:
+            self._output_active.setText("")
 
     def set_local_mic_level(self, level: float) -> None:
         self._self_strip.set_meter_level(level)

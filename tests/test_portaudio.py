@@ -2,41 +2,32 @@
 
 from __future__ import annotations
 
-from babblecast.audio.devices import AudioDevice
-from babblecast.audio.portaudio import _host_rank, _ordered_indices
+from babblecast.audio.session_devices import NAME_KEY_PREFIX, SYSTEM_DEFAULT_KEY
+from babblecast.audio.portaudio import iter_output_device_indices
 
 
-def _dev(index: int, name: str, host: str, *, default_in=False, default_out=False) -> AudioDevice:
-    return AudioDevice(
-        index=index,
-        name=name,
-        host_api=host,
-        max_input_channels=2,
-        max_output_channels=2,
-        default_sample_rate=48000.0,
-        is_default_input=default_in,
-        is_default_output=default_out,
+def test_iter_output_prefers_session_resolution(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "babblecast.audio.portaudio.resolve_output_device",
+        lambda key: 7 if key == SYSTEM_DEFAULT_KEY else 3,
     )
+    monkeypatch.setattr(
+        "babblecast.audio.portaudio.list_raw_output_candidates",
+        lambda: [(3, "hdmi"), (7, "analog hw:0,0")],
+    )
+    order = list(iter_output_device_indices(SYSTEM_DEFAULT_KEY))
+    assert order[0] == 7
 
 
-def test_host_rank_prefers_pipewire_over_alsa() -> None:
-    assert _host_rank("PipeWire") < _host_rank("ALSA")
-    assert _host_rank("PulseAudio") < _host_rank("ALSA")
-
-
-def test_output_order_prefers_pipewire_default() -> None:
-    devices = [
-        _dev(0, "alsa-out", "ALSA", default_out=True),
-        _dev(1, "pw-out", "PipeWire", default_out=True),
-    ]
-    order = list(_ordered_indices(devices, None, default_attr="is_default_output"))
-    assert order[0] == 1
-
-
-def test_preferred_device_tried_first() -> None:
-    devices = [
-        _dev(0, "alsa-out", "ALSA"),
-        _dev(1, "pw-out", "PipeWire", default_out=True),
-    ]
-    order = list(_ordered_indices(devices, "0:alsa-out", default_attr="is_default_output"))
-    assert order[0] == 0
+def test_iter_output_name_key_before_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "babblecast.audio.portaudio.resolve_output_device",
+        lambda key: 3 if key == SYSTEM_DEFAULT_KEY else 5,
+    )
+    monkeypatch.setattr(
+        "babblecast.audio.portaudio.list_raw_output_candidates",
+        lambda: [(3, "hdmi"), (5, "analog hw:0,0"), (7, "other")],
+    )
+    key = f"{NAME_KEY_PREFIX}analog hw:0,0"
+    order = list(iter_output_device_indices(key))
+    assert order[0] == 5
