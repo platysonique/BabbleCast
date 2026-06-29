@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -66,11 +67,15 @@ class TapChatDialog(QDialog):
             f"QPushButton {{ background-color: {UI_MUTED_RED}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
         )
         clear_btn.clicked.connect(self._clear_chat)
+        clear_btn.setAutoDefault(False)
+        clear_btn.setDefault(False)
         add_btn = QPushButton("+ Tap Note")
         add_btn.setStyleSheet(
             f"QPushButton {{ background-color: {UI_SUNFLOWER}; color: #1a1b26; font-weight: 700; padding: 4px 10px; border: none; border-radius: 6px; }}"
         )
         add_btn.clicked.connect(self._compose_tap_note)
+        add_btn.setAutoDefault(False)
+        add_btn.setDefault(False)
         toolbar.addWidget(clear_btn)
         toolbar.addWidget(add_btn)
         toolbar.addStretch()
@@ -83,9 +88,11 @@ class TapChatDialog(QDialog):
         row = QHBoxLayout()
         self._input = QLineEdit()
         self._input.setPlaceholderText("Tap message…")
-        self._input.returnPressed.connect(self._send)
+        self._input.installEventFilter(self)
         send_btn = QPushButton("Send")
         send_btn.clicked.connect(self._send)
+        send_btn.setAutoDefault(True)
+        send_btn.setDefault(True)
         row.addWidget(self._input)
         row.addWidget(send_btn)
         layout.addLayout(row)
@@ -99,14 +106,18 @@ class TapChatDialog(QDialog):
         layout.addWidget(self._notes_bar)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.close)
-        buttons.accepted.connect(self.close)
+        close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_btn is not None:
+            close_btn.setAutoDefault(False)
+            close_btn.setDefault(False)
+            close_btn.clicked.connect(self.close)
         layout.addWidget(buttons)
 
         self._bridge.open_tap(link_id, tap_id)
         self._bridge.clear_pending_tap(link_id, peer_id)
         self._load_persisted_messages()
         self._notes_bar.refresh()
+        self._input.setFocus()
 
     @property
     def link_id(self) -> str:
@@ -124,6 +135,14 @@ class TapChatDialog(QDialog):
         if tap_id == self._tap_id:
             return
         self._tap_id = tap_id
+        self._bridge.open_tap(self._link_id, tap_id)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._send()
+                return True
+        return super().eventFilter(watched, event)
 
     def _load_persisted_messages(self) -> None:
         chat = get_active_tap_chat_store().get(self._tap_id)
@@ -229,6 +248,4 @@ class TapChatDialog(QDialog):
                         settings.skip_tap_note_save_confirm = True
                         save_settings(settings)
                     self._compose_tap_note()
-        self._log.clear()
-        self._messages.clear()
         super().closeEvent(event)
