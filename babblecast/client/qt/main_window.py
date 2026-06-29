@@ -1052,9 +1052,17 @@ class MainWindow(QMainWindow):
         peer_id = target_id if data.get("self_sent") else from_id
         peer_name = target_name if data.get("self_sent") else from_name
         if tap_id and peer_id:
+            old_tap_id = self._tap_ids.get((link_id, peer_id))
             self._tap_ids[(link_id, peer_id)] = tap_id
             self._peer_names[(link_id, peer_id)] = peer_name
             composite = composite_participant_key(link_id, peer_id)
+            if old_tap_id and old_tap_id != tap_id:
+                for (lid, tid), dlg in list(self._tap_dialogs.items()):
+                    if lid == link_id and dlg.peer_id == peer_id:
+                        self._tap_dialogs.pop((lid, tid), None)
+                        dlg.set_tap_id(tap_id)
+                        self._tap_dialogs[(link_id, tap_id)] = dlg
+                        break
             pending = (link_id, peer_id)
             if pending in self._pending_tap_chat_open:
                 self._pending_tap_chat_open.discard(pending)
@@ -1079,6 +1087,15 @@ class MainWindow(QMainWindow):
         tap_id = self._tap_ids.get((link_id, peer_id))
         if not tap_id:
             return
+        for (lid, old_tap_id), dlg in list(self._tap_dialogs.items()):
+            if lid == link_id and dlg.peer_id == peer_id:
+                if old_tap_id != tap_id:
+                    self._tap_dialogs.pop((lid, old_tap_id), None)
+                    dlg.set_tap_id(tap_id)
+                    self._tap_dialogs[(link_id, tap_id)] = dlg
+                dlg.raise_()
+                dlg.activateWindow()
+                return
         key = (link_id, tap_id)
         if key in self._tap_dialogs:
             self._tap_dialogs[key].raise_()
@@ -1097,18 +1114,30 @@ class MainWindow(QMainWindow):
             on_delete_tap_note=self._delete_tap_note,
             parent=self,
         )
-        dlg.finished.connect(lambda _r, k=key: self._on_tap_dialog_closed(k))
+        dlg.finished.connect(lambda _r, d=dlg: self._on_tap_dialog_closed(d))
         self._tap_dialogs[key] = dlg
         dlg.show()
 
-    def _on_tap_dialog_closed(self, key: tuple[str, str]) -> None:
-        self._tap_dialogs.pop(key, None)
+    def _on_tap_dialog_closed(self, dlg: TapChatDialog) -> None:
+        for key, open_dlg in list(self._tap_dialogs.items()):
+            if open_dlg is dlg:
+                self._tap_dialogs.pop(key, None)
+                break
         self._refresh_tap_notes_ui()
 
     def _on_tap_chat(self, link_id: str, data: dict) -> None:
         tap_id = str(data.get("tap_id", ""))
-        key = (link_id, tap_id)
-        dlg = self._tap_dialogs.get(key)
+        dlg = self._tap_dialogs.get((link_id, tap_id))
+        if not dlg:
+            from_id = str(data.get("from_id", ""))
+            for (lid, _tid), open_dlg in self._tap_dialogs.items():
+                if lid == link_id and open_dlg.peer_id == from_id:
+                    dlg = open_dlg
+                    if open_dlg.tap_id != tap_id:
+                        self._tap_dialogs.pop((lid, open_dlg.tap_id), None)
+                        open_dlg.set_tap_id(tap_id)
+                        self._tap_dialogs[(link_id, tap_id)] = open_dlg
+                    break
         if dlg:
             dlg.append_message(data)
 
@@ -1116,14 +1145,6 @@ class MainWindow(QMainWindow):
         pass
 
     def _on_tap_end(self, link_id: str, tap_id: str) -> None:
-        key = (link_id, tap_id)
-        dlg = self._tap_dialogs.pop(key, None)
-        if dlg:
-            dlg.close()
-        for tap_key in list(self._tap_ids):
-            if self._tap_ids.get(tap_key) == tap_id:
-                self._tap_ids.pop(tap_key, None)
-                self._pending_tap_chat_open.discard(tap_key)
         self._refresh_tap_notes_ui()
 
     def _refresh_open_peer_tap_ui(self) -> None:

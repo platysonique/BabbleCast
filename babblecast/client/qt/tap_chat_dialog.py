@@ -108,6 +108,23 @@ class TapChatDialog(QDialog):
         self._load_persisted_messages()
         self._notes_bar.refresh()
 
+    @property
+    def link_id(self) -> str:
+        return self._link_id
+
+    @property
+    def tap_id(self) -> str:
+        return self._tap_id
+
+    @property
+    def peer_id(self) -> str:
+        return self._peer_id
+
+    def set_tap_id(self, tap_id: str) -> None:
+        if tap_id == self._tap_id:
+            return
+        self._tap_id = tap_id
+
     def _load_persisted_messages(self) -> None:
         chat = get_active_tap_chat_store().get(self._tap_id)
         if not chat:

@@ -593,7 +593,7 @@ class BridgeManager:
             self._on_tap_open(link_id, tap_id)
 
     def _handle_tap_end(self, link_id: str, tap_id: str) -> None:
-        get_active_tap_chat_store().remove(tap_id)
+        # Persist messages until the user explicitly clears the thread.
         if self._on_tap_end:
             self._on_tap_end(link_id, tap_id)
 

@@ -78,6 +78,41 @@ class ActiveTapChatStore:
     def all_chats(self) -> list[ActiveTapChat]:
         return sorted(self._by_id.values(), key=lambda c: c.updated_at, reverse=True)
 
+    def _find_peer_chat(
+        self,
+        link_host: str,
+        link_port: int,
+        peer_id: str,
+        peer_name: str,
+    ) -> ActiveTapChat | None:
+        best: ActiveTapChat | None = None
+        for chat in self._by_id.values():
+            if chat.link_host != link_host or chat.link_port != link_port:
+                continue
+            if chat.peer_id == peer_id:
+                return chat
+            if peer_name and chat.peer_name == peer_name:
+                if best is None or chat.updated_at > best.updated_at:
+                    best = chat
+        return best
+
+    def rebind_tap_id(self, old_tap_id: str, new_tap_id: str) -> ActiveTapChat | None:
+        if old_tap_id == new_tap_id:
+            return self._by_id.get(new_tap_id)
+        chat = self._by_id.pop(old_tap_id, None)
+        if not chat:
+            return self._by_id.get(new_tap_id)
+        existing = self._by_id.get(new_tap_id)
+        if existing and existing is not chat:
+            existing.messages.extend(chat.messages)
+            chat = existing
+        else:
+            chat.tap_id = new_tap_id
+        chat.updated_at = time.time()
+        self._by_id[new_tap_id] = chat
+        self.save()
+        return chat
+
     def record_received(
         self,
         *,
@@ -88,25 +123,32 @@ class ActiveTapChatStore:
         peer_name: str,
         server_label: str,
     ) -> ActiveTapChat:
-        existing = self._by_id.get(tap_id)
-        if existing:
-            existing.peer_id = peer_id
-            existing.peer_name = peer_name
-            existing.server_label = server_label
-            existing.link_host = link_host
-            existing.link_port = link_port
-            existing.updated_at = time.time()
-            self.save()
-            return existing
-        chat = ActiveTapChat(
-            tap_id=tap_id,
-            link_host=link_host,
-            link_port=link_port,
-            peer_id=peer_id,
-            peer_name=peer_name,
-            server_label=server_label,
-        )
-        self._by_id[tap_id] = chat
+        by_tap = self._by_id.get(tap_id)
+        by_peer = self._find_peer_chat(link_host, link_port, peer_id, peer_name)
+        if by_peer and by_peer.tap_id != tap_id:
+            chat = self.rebind_tap_id(by_peer.tap_id, tap_id) or by_peer
+        elif by_tap:
+            chat = by_tap
+        elif by_peer:
+            chat = by_peer
+            if chat.tap_id != tap_id:
+                chat = self.rebind_tap_id(chat.tap_id, tap_id) or chat
+        else:
+            chat = ActiveTapChat(
+                tap_id=tap_id,
+                link_host=link_host,
+                link_port=link_port,
+                peer_id=peer_id,
+                peer_name=peer_name,
+                server_label=server_label,
+            )
+            self._by_id[tap_id] = chat
+        chat.peer_id = peer_id
+        chat.peer_name = peer_name
+        chat.server_label = server_label
+        chat.link_host = link_host
+        chat.link_port = link_port
+        chat.updated_at = time.time()
         self.save()
         return chat
 
@@ -162,15 +204,21 @@ class ActiveTapChatStore:
             if p.get("client_id")
         }
         result: dict[tuple[str, str], str] = {}
+        best_by_peer: dict[str, ActiveTapChat] = {}
+        participant_ids = {str(p.get("client_id", "")) for p in (participants or []) if p.get("client_id")}
         for chat in self._by_id.values():
             if chat.link_host != host or chat.link_port != port:
                 continue
             peer_id = chat.peer_id
-            if participants and peer_id not in {str(p.get("client_id", "")) for p in participants}:
+            if participants and peer_id not in participant_ids:
                 alt = by_name.get(chat.peer_name)
                 if alt:
                     peer_id = alt
                     self.remap_peer(chat.tap_id, peer_id)
+            prev = best_by_peer.get(peer_id)
+            if prev is None or chat.updated_at >= prev.updated_at:
+                best_by_peer[peer_id] = chat
+        for peer_id, chat in best_by_peer.items():
             result[(link_id, peer_id)] = chat.tap_id
         return result
 

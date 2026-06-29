@@ -1255,6 +1255,14 @@ class BabbleController:
         peer_name = target_name if data.get("self_sent") else from_name
         if tap_id and peer_id:
             self._tap_ids[(link_id, peer_id)] = tap_id
+            if (
+                self._tap_dialog
+                and getattr(self, "_tap_link_id", None) == link_id
+                and getattr(self, "_tap_peer_id", None) == peer_id
+                and getattr(self, "_tap_id", None) != tap_id
+            ):
+                self._tap_id = tap_id
+                self._bridge.open_tap(link_id, tap_id)
             pending = (link_id, peer_id)
             if pending in self._pending_tap_chat_open:
                 self._pending_tap_chat_open.discard(pending)
@@ -1274,8 +1282,11 @@ class BabbleController:
         if (
             self._tap_dialog
             and getattr(self, "_tap_link_id", None) == link_id
-            and getattr(self, "_tap_id", None) == tap_id
+            and getattr(self, "_tap_peer_id", None) == peer_id
         ):
+            if getattr(self, "_tap_id", None) != tap_id:
+                self._tap_id = tap_id
+                self._bridge.open_tap(link_id, tap_id)
             return
         if self._tap_dialog:
             self._tap_dialog.dismiss()
@@ -1494,14 +1505,6 @@ class BabbleController:
     def _on_tap_end(self, link_id: str, tap_id: str) -> None:
         if not self._alive():
             return
-        for key in list(self._tap_ids):
-            if self._tap_ids.get(key) == tap_id:
-                self._tap_ids.pop(key, None)
-                self._pending_tap_chat_open.discard(key)
-        if self._tap_dialog and self._tap_id == tap_id and self._tap_link_id == link_id:
-            self._tap_dialog.dismiss()
-            self._tap_dialog = None
-            self._tap_messages.clear()
         self.refresh_tap_notes_ui()
 
 
