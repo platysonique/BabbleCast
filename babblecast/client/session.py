@@ -102,6 +102,8 @@ class ClientSession:
         self._last_level_sent_at = 0.0
         self._ws_closing = False
         self._jitter: dict[str, VoiceJitterBuffer] = {}
+        self._decoders: dict[str, OpusCodec] = {}
+        self._plc_counts: dict[str, int] = {}
         self._jitter_lock = threading.Lock()
         self._codec_lock = threading.Lock()
         self._rooms: list[dict[str, Any]] = []
@@ -180,6 +182,13 @@ class ClientSession:
         if self._link_id:
             return composite_participant_key(self._link_id, client_id)
         return client_id
+
+    def _remove_sender(self, sender_id: str) -> None:
+        with self._jitter_lock:
+            self._jitter.pop(sender_id, None)
+        with self._codec_lock:
+            self._decoders.pop(sender_id, None)
+        self._plc_counts.pop(sender_id, None)
 
     def _setup_audio(self) -> None:
         if self.is_bridge:
@@ -288,10 +297,22 @@ class ClientSession:
         key = self._participant_key(packet.sender_id)
         for payload in payloads:
             with self._codec_lock:
+                is_new_decoder = packet.sender_id not in self._decoders
+                decoder = self._decoders.setdefault(packet.sender_id, OpusCodec())
+                if is_new_decoder:
+                    logger.info("Created per-sender decoder for %s", packet.sender_id)
                 if payload is None:
-                    pcm = self._codec.decode_plc()
+                    count = self._plc_counts.get(packet.sender_id, 0) + 1
+                    self._plc_counts[packet.sender_id] = count
+                    if count == 1 or count % 50 == 0:
+                        logger.info(
+                            "PLC for sender %s (count=%d)",
+                            packet.sender_id,
+                            count,
+                        )
+                    pcm = decoder.decode_plc()
                 else:
-                    pcm = self._codec.decode(payload)
+                    pcm = decoder.decode(payload)
             if len(pcm) == FRAME_BYTES:
                 speaker.push_pcm(key, pcm)
 
@@ -457,6 +478,9 @@ class ClientSession:
             self._udp_thread = None
         with self._jitter_lock:
             self._jitter.clear()
+        with self._codec_lock:
+            self._decoders.clear()
+        self._plc_counts.clear()
         if close_ws and self._loop and self._ws and threading.current_thread() is not self._thread:
             try:
                 asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop).result(timeout=2)
@@ -530,6 +554,9 @@ class ClientSession:
                 self._udp_sock = None
             with self._jitter_lock:
                 self._jitter.clear()
+            with self._codec_lock:
+                self._decoders.clear()
+            self._plc_counts.clear()
             self._thread = None
             return
         self._shutdown_transport()
