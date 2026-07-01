@@ -828,6 +828,14 @@ class MainWindow(QMainWindow):
                     self._drawer.close_peer()
                 self._participant_widgets.pop(key).deleteLater()
                 self._peer_participant_data.pop(key, None)
+                link_id, _, client_id = key.partition(":")
+                if link_id and client_id:
+                    session = self._bridge.get_session(link_id)
+                    if session:
+                        session._remove_sender(client_id)  # noqa: SLF001
+                speaker = self._bridge.speaker
+                if speaker:
+                    speaker.remove_participant(key)
 
     def _toggle_peer_drawer(self, composite: str) -> None:
         link_id, _, client_id = composite.partition(":")

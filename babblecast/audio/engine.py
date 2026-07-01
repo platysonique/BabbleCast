@@ -278,6 +278,7 @@ class SpeakerOutput:
         try:
             buf.put_nowait(arr)
         except queue.Full:
+            logger.debug("Participant %s playback queue full; dropping oldest frame", client_id)
             try:
                 buf.get_nowait()
             except queue.Empty:
@@ -313,7 +314,7 @@ class SpeakerOutput:
                 try:
                     self._queue.put_nowait(frame)
                 except queue.Full:
-                    pass
+                    logger.debug("Output mix queue full; dropping newest frame")
             next_tick += FRAME_DURATION_SEC
             sleep_for = next_tick - time.monotonic()
             if sleep_for > 0:
