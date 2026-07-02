@@ -10,6 +10,7 @@ from kivymd.uix.screenmanager import MDScreenManager
 
 from kivy.metrics import dp
 
+from mobile.android_lifecycle import android_activity_is_finishing, should_run_in_background
 from mobile.controller import BabbleController
 from mobile.screens import ConnectScreen, LiveScreen, SettingsScreen
 from mobile.theme import SURFACE, apply_theme
@@ -74,20 +75,15 @@ class BabbleCastMobileApp(MDApp):
         return self._screen_manager.get_screen(name)
 
     def on_stop(self) -> None:
-        self.controller.stop_all()
+        if android_activity_is_finishing():
+            self.controller.stop_all()
 
     def on_pause(self) -> bool:
-        try:
-            from kivy.utils import platform
-
-            if platform == "android":
-                from jnius import autoclass
-
-                activity = autoclass("org.kivy.android.PythonActivity").mActivity
-                if activity is not None and activity.isFinishing():
-                    self.controller.stop_all()
-        except Exception:
-            pass
+        if android_activity_is_finishing():
+            self.controller.stop_all()
+            return True
+        if should_run_in_background(self.controller.voice_session_active):
+            return False
         return True
 
     def on_resume(self) -> None:

@@ -116,6 +116,14 @@ class BabbleController:
     def settings(self):
         return self._settings
 
+    @property
+    def voice_session_active(self) -> bool:
+        if any(l.connected for l in self._bridge.links):
+            return True
+        if self._embedded and self._embedded.running:
+            return True
+        return False
+
     def set_status(self, text: str) -> None:
         if not self._alive():
             return
