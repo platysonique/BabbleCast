@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication
 from babblecast.client.qt.main_window import MainWindow
 from babblecast.client.qt.single_instance import SingleInstanceServer, another_instance_running
 from babblecast.client.qt.splash import SplashScreen
+from babblecast.killswitch import KillSwitchRevoked, check_killswitch_or_raise
 
 _ASSETS = Path(__file__).resolve().parents[3] / "assets"
 _ICON = _ASSETS / "icon.png"
@@ -21,6 +22,11 @@ def run_gui() -> int:
     # Must run before QApplication — cheap socket ping, no GUI yet.
     if another_instance_running():
         return 0
+
+    try:
+        check_killswitch_or_raise("babblecast")
+    except KillSwitchRevoked:
+        return 1
 
     app = QApplication(sys.argv)
     app.setApplicationName("BabbleCast")
@@ -43,6 +49,18 @@ def run_gui() -> int:
         window.activateWindow()
 
     instance_server.raise_requested.connect(_present_window)
+
+    kill_timer = QTimer()
+    kill_timer.setInterval(15 * 60 * 1000)
+
+    def _killswitch_tick() -> None:
+        try:
+            check_killswitch_or_raise("babblecast")
+        except KillSwitchRevoked:
+            app.quit()
+
+    kill_timer.timeout.connect(_killswitch_tick)
+    kill_timer.start()
 
     splash = SplashScreen()
     splash.show_on_primary_screen()

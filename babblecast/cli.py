@@ -69,6 +69,10 @@ def main() -> None:
         _run_update()
         return
 
+    from babblecast.killswitch import enforce_killswitch
+
+    enforce_killswitch("babblecast")
+
     if args.command == "server":
         from babblecast.server.hub import run_server
 
