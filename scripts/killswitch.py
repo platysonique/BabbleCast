@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -57,6 +58,16 @@ def is_revoked(state: dict, mid_hash: str) -> bool:
     return mid_hash in revoked
 
 
+def wipe_credentials() -> None:
+    wipe_script = Path(__file__).with_name("killswitch-wipe-credentials.py")
+    if not wipe_script.is_file():
+        return
+    subprocess.run(
+        [sys.executable, str(wipe_script), "--apply", "--quiet"],
+        check=False,
+    )
+
+
 def check(*, url: str | None = None, fail_open_offline: bool = True) -> None:
     url = url or os.environ.get("PLATYSONIQUE_KILLSWITCH_URL", DEFAULT_URL)
     mid = machine_id_hash()
@@ -70,6 +81,7 @@ def check(*, url: str | None = None, fail_open_offline: bool = True) -> None:
             sys.exit(2)
     if is_revoked(state, mid):
         msg = state.get("message") or "This installation has been disabled."
+        wipe_credentials()
         print(msg, file=sys.stderr)
         print(f"Machine ID hash: {mid}", file=sys.stderr)
         sys.exit(1)
@@ -80,10 +92,19 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="Exit 1 if this machine is revoked")
     parser.add_argument("--show-id", action="store_true", help="Print SHA-256 of /etc/machine-id")
     parser.add_argument("--url", default=None, help="Override killswitch JSON URL")
+    parser.add_argument(
+        "--wipe-credentials",
+        action="store_true",
+        help="Wipe stored Platysonique credentials on this machine (no kill-switch check)",
+    )
     args = parser.parse_args()
 
     if args.show_id:
         print(machine_id_hash())
+        return
+
+    if args.wipe_credentials:
+        wipe_credentials()
         return
 
     check(url=args.url)
