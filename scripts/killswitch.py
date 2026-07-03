@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_URL = (
-    "https://raw.githubusercontent.com/platysonique/pombomb-obs/main/security/killswitch.json"
+    "https://raw.githubusercontent.com/platysonique/platysonique-killswitch/main/killswitch.json"
 )
 CACHE = Path.home() / ".cache" / "platysonique" / "killswitch.json"
 APP_NAME = os.environ.get("PLATYSONIQUE_APP", "platysonique")
